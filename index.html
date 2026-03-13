@@ -1,0 +1,2347 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>いま何水系？</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@300;400;500&family=Noto+Sans+JP:wght@300;400;500&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
+// ── ドロワー制御 ─────────────────────────────────────
+function openDrawer(w, layerIdx) {
+  const overlay = document.getElementById('drawerOverlay');
+  const drawer  = document.getElementById('infoDrawer');
+  const body    = document.getElementById('drawerBody');
+
+  // ヘッダー設定
+  const name = w.name || ('無名の' + waterwayLabel(w.waterwayType, w.isCulvert));
+  document.getElementById('drawerTitle').textContent = name;
+  document.getElementById('drawerTypeTag').textContent =
+    waterwayLabel(w.waterwayType, w.isCulvert).toUpperCase()
+    + (w.isCulvert ? ' · 暗渠' : '');
+  document.getElementById('drawerDist').textContent =
+    '現在地から約 ' + formatDist(w.dist);
+
+  // ローディング状態
+  body.innerHTML = `<div class="drawer-loading">
+    <div class="drawer-spinner"></div><br>
+    <span style="font-size:12px;letter-spacing:0.08em;color:var(--ink-faint)">情報を取得中…</span>
+  </div>`;
+
+  // ドロワーを開く
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  // 地図を該当水路に移動
+  if (w.coords && w.coords.length > 0 && map) {
+    const midPt = w.coords[Math.floor(w.coords.length / 2)];
+    map.flyTo([midPt[0], midPt[1]], 16, { duration: 0.8 });
+  }
+
+  // Wikipedia情報を取得
+  if (w.name) {
+    fetchWikiInfo(w.name, w, body);
+  } else {
+    renderNoWikiResult(body, w);
+  }
+}
+
+function closeDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('infoDrawer').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// スワイプで閉じる
+(function() {
+  let startY = 0;
+  const drawer = document.getElementById('infoDrawer');
+  drawer.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
+  drawer.addEventListener('touchend', e => {
+    const dy = e.changedTouches[0].clientY - startY;
+    if (dy > 60) closeDrawer();
+  }, { passive: true });
+})();
+
+// ── Wikipedia REST API ───────────────────────────────
+async function fetchWikiInfo(name, w, bodyEl) {
+  // Step1: Wikipedia Search API で部分一致検索（曖昧一致に強い）
+  try {
+    const searchUrl = 'https://ja.wikipedia.org/w/api.php?'
+      + 'action=query&list=search&format=json&origin=*&srlimit=5&srsearch='
+      + encodeURIComponent(name);
+    const sRes = await fetch(searchUrl);
+    const sData = await sRes.json();
+    const hits = (sData.query?.search || []);
+
+    // ヒットした記事タイトルを順に summary APIで取得
+    for (const hit of hits) {
+      // 地名・水路関係でなさそうなものをスキップ（人名・アルバム等）
+      const t = hit.title;
+      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
+      if (!isLikelyWaterway(t, snippet, name)) continue;
+
+      try {
+        const sumUrl = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+          + encodeURIComponent(t);
+        const sumRes = await fetch(sumUrl, { headers: { 'Accept': 'application/json' } });
+        if (!sumRes.ok) continue;
+        const sumData = await sumRes.json();
+        if (sumData.type === 'disambiguation') continue;
+        if (!sumData.extract || sumData.extract.length < 40) continue;
+
+        renderWikiResult(sumData, w, bodyEl);
+        return;
+      } catch(e) { continue; }
+    }
+  } catch(e) { /* search API失敗時はStep2へ */ }
+
+  // Step2: 直接タイトル一致（フォールバック）
+  const candidates = buildWikiCandidates(name);
+  for (const candidate of candidates) {
+    try {
+      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+        + encodeURIComponent(candidate);
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.type === 'disambiguation') continue;
+      if (!data.extract || data.extract.length < 40) continue;
+      renderWikiResult(data, w, bodyEl);
+      return;
+    } catch(e) { continue; }
+  }
+
+  renderNoWikiResult(bodyEl, w);
+}
+
+// 水路・地理系の記事かを簡易判定
+function isLikelyWaterway(title, snippet, originalName) {
+  const combined = title + ' ' + (snippet || '');
+
+  // ── NG① タイトルに人物・施設・エンタメ語が含まれる ─────
+  const titleNg = [
+    '駅', '空港', '高速道路', 'インターチェンジ', 'ジャンクション',
+    'アルバム', 'シングル', '楽曲', '映画', 'ドラマ', 'アニメ', '漫画', '小説', 'ゲーム',
+    '神社', '寺院', '城跡', '学校', '大学', '病院',
+  ];
+  if (titleNg.some(w => title.includes(w))) return false;
+
+  // ── NG② snippet（記事冒頭）に人物を示す語が含まれる ────
+  // 例: 「広瀬すず（ひろせ すず）は、日本の女優」
+  const snippetNg = [
+    'は、日本の', 'は日本の',          // 「○○は、日本の俳優」パターン
+    '（生まれ）', '(born ', 'born in',
+    'スケーター', 'スポーツ選手', 'サッカー選手', '野球選手', '陸上選手',
+    '俳優', '女優', '声優', '歌手', '芸人', 'アイドル',
+    '政治家', '実業家', '官僚', '軍人', '武将', '僧侶',
+    '画家', '彫刻家', '建築家', '写真家', '小説家', '詩人', '作曲家',
+  ];
+  if (snippetNg.some(w => combined.includes(w))) return false;
+
+  // ── OK: 水路・地理系キーワードがあればOK ───────────────
+  const okWords = ['川', '河川', '用水', '水路', '堀', '運河', '湖', '池', '沼',
+                   '湿地', '流域', '水系', '源流', '暗渠', '疏水', '堰', '港湾',
+                   '河口', '支流', '本流', '分流', '灌漑', '一級河川', '二級河川'];
+  if (okWords.some(w => combined.includes(w))) return true;
+
+  // 元の川の名前がタイトルに含まれていればOK（地域限定記事など）
+  const core = originalName.replace(/^旧/, '').replace(/緑道$|遊歩道$|親水$/, '');
+  if (title.includes(core) && core.length >= 2) return true;
+
+  return false;
+}
+
+function buildWikiCandidates(name) {
+  const candidates = [name];
+  if (name.startsWith('旧')) candidates.push(name.slice(1));
+  const stripped = name.replace(/緑道$|遊歩道$|公園$|親水$/, '');
+  if (stripped !== name) candidates.push(stripped);
+  if (name.endsWith('路')) candidates.push(name.slice(0, -1));
+  if (name.includes('支流')) candidates.push(name.replace('支流', '').trim());
+  return [...new Set(candidates)];
+}
+
+function renderWikiResult(data, w, bodyEl) {
+  const thumb = data.thumbnail?.source;
+  const wikiUrl = data.content_urls?.desktop?.page || data.content_urls?.mobile?.page;
+  const extract = data.extract || '';
+
+  // OSMタグから補足情報
+  const osmMeta = buildOsmMeta(w);
+
+  bodyEl.innerHTML = `
+    ${thumb
+      ? `<img class="drawer-thumb" src="${thumb}" alt="${data.title}" loading="lazy">`
+      : `<div class="drawer-thumb-placeholder">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>`
+    }
+    <div class="drawer-content">
+      <p class="drawer-extract">${extract}</p>
+
+      ${osmMeta.length > 0 ? `
+        <div class="drawer-meta">
+          ${osmMeta.map(m => `
+            <div class="drawer-meta-row">
+              <span class="drawer-meta-label">${m.label}</span>
+              <span>${m.value}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      ${wikiUrl ? `
+        <a class="drawer-wiki-link" href="${wikiUrl}" target="_blank" rel="noopener">
+          Wikipedia で続きを読む →
+        </a>
+      ` : ''}
+
+      <div style="margin-top:12px;font-size:9px;color:var(--ink-faint);font-family:'DM Mono',monospace;text-align:right">
+        Source: Wikipedia / OpenStreetMap
+      </div>
+    </div>
+  `;
+}
+
+function renderNoWikiResult(bodyEl, w) {
+  const osmMeta = buildOsmMeta(w);
+  const name = w.name || '無名の水路';
+
+  bodyEl.innerHTML = `
+    <div class="drawer-thumb-placeholder">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>
+    <div class="drawer-content">
+      <div class="drawer-no-result">
+        <div class="drawer-no-result-icon">〜</div>
+        <p class="drawer-no-result-text">
+          「${name}」のWikipedia記事は見つかりませんでした。<br>
+          OpenStreetMapに登録されている情報を表示しています。
+        </p>
+      </div>
+
+      ${osmMeta.length > 0 ? `
+        <div class="drawer-meta">
+          ${osmMeta.map(m => `
+            <div class="drawer-meta-row">
+              <span class="drawer-meta-label">${m.label}</span>
+              <span>${m.value}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <div style="margin-top:16px;padding:12px;background:var(--water-mist);border-radius:8px;font-size:11px;color:var(--ink-faint);line-height:1.8;letter-spacing:0.03em">
+        この水路は${waterwayLabel(w.waterwayType, w.isCulvert)}です。
+        ${w.isCulvert ? '現在は地下に埋設され、暗渠となっています。かつての流路が緑道や道路の曲がりとして地上に痕跡を残しています。' : ''}
+        地図上で水路をタップするとOpenStreetMapの詳細情報を確認できます。
+      </div>
+
+      <div style="margin-top:10px;font-size:9px;color:var(--ink-faint);font-family:'DM Mono',monospace;text-align:right">
+        Source: OpenStreetMap contributors
+      </div>
+    </div>
+  `;
+}
+
+function buildOsmMeta(w) {
+  const tags = w.tags || {};
+  const meta = [];
+  if (w.waterwayType) meta.push({ label: '種別', value: waterwayLabel(w.waterwayType, w.isCulvert) + (w.isCulvert ? '（暗渠）' : '') });
+  if (tags.ref)       meta.push({ label: 'REF', value: tags.ref });
+  if (tags.start_date || tags.year) meta.push({ label: '整備年', value: tags.start_date || tags.year });
+  if (tags.operator)  meta.push({ label: '管理', value: tags.operator });
+  if (tags.description) meta.push({ label: '備考', value: tags.description });
+  if (tags['name:en']) meta.push({ label: 'EN', value: tags['name:en'] });
+  if (w.altName)      meta.push({ label: '別名', value: w.altName });
+  meta.push({ label: 'OSM ID', value: 'way/' + w.id });
+  return meta;
+}
+
+
+// ── 施設データ ────────────────────────────────────────
+let fetchedFacilities = [];
+let facilityMarkers = [];
+let facilityFilter = 'all';
+let currentTab = 'water';
+
+// ── タブ切替 ──────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  const waterSections = ['watershedSection','descSection','waterwaysSection','legendSection'];
+  const isWater = tab === 'water';
+
+  // 水路関連セクションの表示切替
+  document.querySelectorAll('.nearest-section, .waterways-section, .legend')
+    .forEach(el => el.style.display = isWater ? '' : 'none');
+  document.getElementById('facilitySection').style.display = isWater ? 'none' : '';
+
+  // ボトムナビのアクティブ状態
+  document.getElementById('bnavWater').classList.toggle('active', isWater);
+  document.getElementById('bnavFacility').classList.toggle('active', !isWater);
+
+  // 地図の水路マーカー/施設マーカー切替（安全な追加・削除）
+  if (map) {
+    waterwayLayers.forEach(l => {
+      try { isWater ? l.addTo(map) : map.removeLayer(l); } catch(e) {}
+    });
+    facilityMarkers.forEach(m => {
+      try { isWater ? map.removeLayer(m) : m.addTo(map); } catch(e) {}
+    });
+  }
+
+  // 施設タブを初めて開いたとき取得
+  if (!isWater && fetchedFacilities.length === 0 && userLat) {
+    fetchFacilities(userLat, userLng);
+  }
+}
+
+// ── 施設フィルタ ──────────────────────────────────────
+function filterFacility(type) {
+  facilityFilter = type;
+  document.querySelectorAll('.ftab').forEach(b => b.classList.remove('active'));
+  document.getElementById('ftab' + type.charAt(0).toUpperCase() + type.slice(1)).classList.add('active');
+  renderFacilityList(fetchedFacilities);
+}
+
+// ── Overpass で施設取得 ───────────────────────────────
+async function fetchFacilities(lat, lng) {
+  const listEl = document.getElementById('facilityList');
+  listEl.innerHTML = '<div class="facility-loading"><div class="spinner" style="margin:0 auto 8px"></div>周辺施設を取得中…</div>';
+
+  // 既存マーカー削除
+  facilityMarkers.forEach(m => { try { map.removeLayer(m); } catch(e) {} });
+  facilityMarkers = [];
+
+  const r = 800;
+  const query = `
+    [out:json][timeout:20];
+    (
+      node["amenity"="toilets"](around:${r},${lat},${lng});
+      node["shop"~"^(convenience|supermarket)$"](around:${r},${lat},${lng});
+      node["amenity"="convenience_store"](around:${r},${lat},${lng});
+    );
+    out body;
+  `;
+
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: 'data=' + encodeURIComponent(query),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    const data = await res.json();
+
+    fetchedFacilities = data.elements.map(e => {
+      const tags = e.tags || {};
+      const isToilet  = tags.amenity === 'toilets';
+      const isConbini = tags.shop === 'convenience' || tags.shop === 'supermarket'
+                     || tags.amenity === 'convenience_store';
+      const dist = haversine(lat, lng, e.lat, e.lon);
+      return {
+        id: e.id, lat: e.lat, lng: e.lon, dist,
+        name: tags.name || tags.brand || (isToilet ? '公衆トイレ' : 'コンビニ'),
+        type: isToilet ? 'toilet' : 'conbini',
+        fee: tags.fee,
+        hours: tags.opening_hours,
+        brand: tags.brand,
+        wheelchair: tags.wheelchair,
+        tags,
+      };
+    }).sort((a, b) => a.dist - b.dist);
+
+    renderFacilityList(fetchedFacilities);
+    renderFacilityMarkers(fetchedFacilities);
+
+  } catch(e) {
+    listEl.innerHTML = `<div class="error-card">⚠ 施設データの取得に失敗しました。<br><small>${e.message}</small></div>`;
+  }
+}
+
+// ── 施設リスト描画 ────────────────────────────────────
+function renderFacilityList(facilities) {
+  const listEl = document.getElementById('facilityList');
+  const filtered = facilityFilter === 'all'
+    ? facilities
+    : facilities.filter(f => f.type === facilityFilter);
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<div style="text-align:center;padding:20px 0;color:var(--stone-dark);font-size:12px">
+      この周辺には${facilityFilter === 'toilet' ? 'トイレ' : facilityFilter === 'conbini' ? 'コンビニ' : '施設'}が見つかりませんでした
+    </div>`;
+    return;
+  }
+
+  listEl.innerHTML = '';
+  filtered.slice(0, 10).forEach((f, i) => {
+    const card = document.createElement('div');
+    card.className = 'facility-card fade-in';
+    card.style.animationDelay = i * 0.06 + 's';
+    card.style.animationFillMode = 'both';
+
+    const icon  = f.type === 'toilet' ? '🚻' : brandIcon(f.brand);
+    const iclass = f.type === 'toilet' ? 'fac-icon-toilet' : 'fac-icon-conbini';
+
+    // タグ群
+    const tags = [];
+    if (f.hours === '24/7' || f.hours === '24時間') tags.push({ text: '24h', cls: 'fac-tag-24h' });
+    if (f.fee === 'yes')  tags.push({ text: '有料', cls: 'fac-tag-fee' });
+    if (f.fee === 'no')   tags.push({ text: '無料', cls: 'fac-tag-free' });
+    if (f.wheelchair === 'yes') tags.push({ text: '♿', cls: 'fac-tag' });
+    if (f.type === 'conbini' && f.brand) tags.push({ text: f.brand, cls: 'fac-tag' });
+
+    card.innerHTML = `
+      <div class="fac-icon ${iclass}">${icon}</div>
+      <div class="fac-info">
+        <div class="fac-name">${f.name}</div>
+        <div class="fac-meta">
+          ${tags.map(t => `<span class="fac-tag ${t.cls}">${t.text}</span>`).join('')}
+          ${f.hours && f.hours !== '24/7' ? `<span>${f.hours.slice(0,20)}</span>` : ''}
+        </div>
+      </div>
+      <div class="fac-dist">${formatDist(f.dist)}</div>
+    `;
+
+    card.onclick = () => {
+      if (map) map.flyTo([f.lat, f.lng], 17, { duration: 0.8 });
+      facilityMarkers.forEach(m => {
+        if (m._facilityId === f.id) m.openPopup();
+      });
+    };
+
+    listEl.appendChild(card);
+  });
+}
+
+// ── 地図に施設マーカー描画 ───────────────────────────
+function renderFacilityMarkers(facilities) {
+  facilityMarkers.forEach(m => { try { map.removeLayer(m); } catch(e) {} });
+  facilityMarkers = [];
+
+  facilities.forEach(f => {
+    const isToilet = f.type === 'toilet';
+    const color = isToilet ? '#4a7fa3' : '#e09040';
+    const emoji = isToilet ? '🚻' : brandIcon(f.brand);
+
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        background:${color};color:white;
+        width:28px;height:28px;border-radius:8px;
+        display:flex;align-items:center;justify-content:center;
+        font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.25);
+        border:2px solid white;
+      ">${emoji}</div>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+
+    const marker = L.marker([f.lat, f.lng], { icon });
+    marker._facilityId = f.id;
+    marker.bindPopup(`
+      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+        <b>${f.name}</b><br>
+        <span style="color:#7a9aaa;font-size:10px;font-family:monospace">
+          ${isToilet ? 'トイレ' : 'コンビニ'} · ${formatDist(f.dist)}
+          ${f.hours === '24/7' ? ' · 24h' : ''}
+          ${f.fee === 'no' ? ' · 無料' : f.fee === 'yes' ? ' · 有料' : ''}
+        </span>
+      </div>
+    `);
+
+    // 施設タブが開いているときだけ地図に表示
+    if (currentTab === 'facility') marker.addTo(map);
+    facilityMarkers.push(marker);
+  });
+}
+
+// ブランドアイコン
+function brandIcon(brand) {
+  if (!brand) return '🏪';
+  if (brand.includes('セブン') || brand.includes('7-Eleven')) return '7️⃣';
+  if (brand.includes('ファミリーマート') || brand.includes('FamilyMart')) return '🟢';
+  if (brand.includes('ローソン') || brand.includes('Lawson')) return '🔵';
+  if (brand.includes('ミニストップ')) return '🟡';
+  return '🏪';
+}
+
+</script>
+<style>
+  :root {
+    --water-deep: #2d5a6b;
+    --water-mid: #4a8fa3;
+    --water-light: #a8cfd8;
+    --water-pale: #dff0f4;
+    --water-mist: #f0f8fa;
+    --ink: #1a2630;
+    --ink-soft: #3d5260;
+    --ink-faint: #7a9aaa;
+    --stone: #e8eef0;
+    --stone-dark: #c8d8dc;
+    --white: #fafcfd;
+    --canal: #6bb3c4;
+    --culvert: #8b7faa;
+    --stream: #4a8fa3;
+    --river: #2d5a6b;
+    --drain: #7a9a7a;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--white);
+    color: var(--ink);
+    font-family: 'Noto Sans JP', sans-serif;
+    font-weight: 300;
+    min-height: 100vh;
+    max-width: 430px;
+    margin: 0 auto;
+    overflow-x: hidden;
+  }
+
+  .header {
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--stone);
+    background: var(--white);
+    position: sticky;
+    top: 0;
+    z-index: 200;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+
+  .app-title {
+    font-family: 'Noto Serif JP', serif;
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--water-deep);
+    letter-spacing: 0.05em;
+  }
+
+  .app-subtitle {
+    font-size: 9px;
+    color: var(--ink-faint);
+    letter-spacing: 0.12em;
+    margin-top: 2px;
+    font-family: 'DM Mono', monospace;
+  }
+
+  .version-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--water-mid);
+    background: var(--water-pale);
+    padding: 3px 7px;
+    border-radius: 4px;
+    letter-spacing: 0.05em;
+  }
+
+  /* 現在地 */
+  .location-section {
+    padding: 16px 20px;
+    background: var(--water-mist);
+    border-bottom: 1px solid var(--stone);
+  }
+
+  .location-btn {
+    width: 100%;
+    padding: 13px 20px;
+    background: var(--water-deep);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-family: 'Noto Sans JP', sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  .location-btn:hover { background: var(--water-mid); }
+  .location-btn:active { transform: scale(0.98); }
+  .location-btn:disabled { background: var(--ink-faint); cursor: not-allowed; }
+
+  .coords-row {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 7px;
+  }
+
+  .coord-card {
+    background: white;
+    border: 1px solid var(--stone-dark);
+    border-radius: 8px;
+    padding: 7px 10px;
+  }
+
+  .coord-label {
+    font-size: 8px;
+    color: var(--ink-faint);
+    letter-spacing: 0.15em;
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+  }
+
+  .coord-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--water-deep);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .status-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 4px;
+    background: var(--stone-dark);
+  }
+  .status-dot.active { background: #5cb85c; animation: blink 2s infinite; }
+  .status-dot.loading { background: #e0a050; animation: blink 0.6s infinite; }
+  .status-dot.error { background: #c0504d; }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* 地図 */
+  .map-section {
+    border-bottom: 1px solid var(--stone);
+  }
+
+  .map-header {
+    padding: 12px 20px 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  #map {
+    width: 100%;
+    height: 240px;
+  }
+
+  .leaflet-container { font-family: 'Noto Sans JP', sans-serif; cursor: crosshair !important; }
+  .leaflet-grab { cursor: crosshair !important; }
+  .leaflet-dragging .leaflet-grab { cursor: grabbing !important; }
+
+  /* 水路リスト */
+  .waterways-section {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--stone);
+  }
+
+  .waterway-count {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--water-mid);
+    margin-left: 6px;
+  }
+
+  .waterway-card {
+    background: white;
+    border: 1px solid var(--stone);
+    border-radius: 10px;
+    padding: 11px 13px;
+    margin-bottom: 7px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    cursor: pointer;
+  }
+
+  .waterway-card:last-child { margin-bottom: 0; }
+
+  .waterway-card:hover {
+    border-color: var(--water-light);
+    box-shadow: 0 2px 8px rgba(45,90,107,0.08);
+  }
+
+  .wtype-icon {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .wtype-river { background: #ddedf5; }
+  .wtype-stream { background: #ddf0f5; }
+  .wtype-canal { background: #ddf5ee; }
+  .wtype-drain { background: #eef5dd; }
+  .wtype-culvert { background: #ebe8f5; }
+  .wtype-ditch { background: #f5f0dd; }
+  .wtype-default { background: var(--water-pale); }
+
+  .winfo { flex: 1; min-width: 0; }
+
+  .wname {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .wmeta {
+    font-size: 10px;
+    color: var(--ink-faint);
+    margin-top: 2px;
+    font-family: 'DM Mono', monospace;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .wmeta-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+  }
+
+  .tag-culvert { background: #ebe8f5; color: #6b5fa0; }
+  .tag-underground { background: #ebe8f5; color: #6b5fa0; }
+  .tag-river { background: #ddedf5; color: #2d6880; }
+  .tag-canal { background: #ddf5ee; color: #2d6850; }
+  .tag-stream { background: #ddf0f5; color: #2d6870; }
+  .tag-drain { background: #eef5dd; color: #406030; }
+  .tag-default { background: var(--water-pale); color: var(--water-deep); }
+
+  .wdist {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--water-mid);
+    white-space: nowrap;
+    text-align: right;
+    flex-shrink: 0;
+    padding-top: 2px;
+  }
+
+  /* ローディングスピナー */
+  .loading-area {
+    text-align: center;
+    padding: 24px 0;
+    color: var(--ink-faint);
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--stone);
+    border-top-color: var(--water-mid);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 8px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .loading-text {
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    display: block;
+  }
+
+
+
+  /* 凡例 */
+  .legend {
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--stone);
+  }
+
+  .legend-title {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--ink-faint);
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .legend-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--ink-soft);
+  }
+
+  .legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* エラー */
+  .error-card {
+    background: #fff5f5;
+    border: 1px solid #f5c0c0;
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-size: 12px;
+    color: #804040;
+    letter-spacing: 0.03em;
+  }
+
+  .footer {
+    padding: 18px 20px;
+    text-align: center;
+  }
+
+  .footer-text {
+    font-size: 9px;
+    color: var(--ink-faint);
+    letter-spacing: 0.1em;
+    font-family: 'DM Mono', monospace;
+    line-height: 1.8;
+  }
+
+  .fade-in { animation: fadeIn 0.4s ease forwards; }
+  @keyframes ripple {
+    0% { transform: scale(0.5); opacity: 0.8; }
+    100% { transform: scale(2.5); opacity: 0; }
+  }
+  @keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:none} }
+
+  .osm-badge {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--ink-faint);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .osm-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #7fb539;
+  }
+
+
+
+  .map-caption {
+    padding: 7px 12px;
+    font-size: 9px;
+    color: var(--ink-faint);
+    font-family: 'DM Mono', monospace;
+    background: var(--water-mist);
+    letter-spacing: 0.06em;
+    border-top: 1px solid var(--stone);
+    text-align: center;
+  }
+
+  /* 凡例に暗渠強調 */
+  .legend-culvert-note {
+    margin-top: 8px;
+    padding: 7px 10px;
+    background: #ebe8f5;
+    border-radius: 6px;
+    font-size: 10px;
+    color: #5a508a;
+    letter-spacing: 0.03em;
+    line-height: 1.6;
+  }
+
+  /* ── ウィキ情報ドロワー ─────────────────────────── */
+  .drawer-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(26, 38, 48, 0.45);
+    z-index: 500;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  .drawer-overlay.open {
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  .drawer {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%) translateY(100%);
+    width: 100%;
+    max-width: 430px;
+    max-height: 82vh;
+    background: var(--white);
+    border-radius: 18px 18px 0 0;
+    z-index: 501;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+    box-shadow: 0 -4px 32px rgba(45, 90, 107, 0.18);
+  }
+  .drawer.open {
+    transform: translateX(-50%) translateY(0);
+  }
+
+  .drawer-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--stone-dark);
+    border-radius: 2px;
+    margin: 10px auto 0;
+    flex-shrink: 0;
+  }
+
+  .drawer-header {
+    padding: 10px 18px 12px;
+    border-bottom: 1px solid var(--stone);
+    flex-shrink: 0;
+  }
+
+  .drawer-type-tag {
+    font-size: 9px;
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.15em;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .drawer-title {
+    font-family: 'Noto Serif JP', serif;
+    font-size: 20px;
+    font-weight: 500;
+    color: var(--water-deep);
+    letter-spacing: 0.04em;
+  }
+
+  .drawer-dist {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--water-mid);
+    margin-top: 3px;
+  }
+
+  .drawer-body {
+    overflow-y: auto;
+    flex: 1;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .drawer-thumb {
+    width: 100%;
+    height: 160px;
+    object-fit: cover;
+    display: block;
+    background: var(--stone);
+  }
+
+  .drawer-thumb-placeholder {
+    width: 100%;
+    height: 120px;
+    background: var(--water-pale);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    color: var(--water-light);
+  }
+
+  .drawer-content {
+    padding: 16px 18px 24px;
+  }
+
+  .drawer-extract {
+    font-family: 'Noto Serif JP', serif;
+    font-size: 13.5px;
+    line-height: 2.1;
+    color: var(--ink-soft);
+    letter-spacing: 0.03em;
+  }
+
+  .drawer-loading {
+    padding: 40px 0;
+    text-align: center;
+    color: var(--ink-faint);
+  }
+
+  .drawer-spinner {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    border: 2px solid var(--stone);
+    border-top-color: var(--water-mid);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 10px;
+  }
+
+  .drawer-meta {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--stone);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .drawer-meta-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 12px;
+    color: var(--ink-soft);
+  }
+
+  .drawer-meta-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--ink-faint);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    min-width: 48px;
+    padding-top: 2px;
+  }
+
+  .drawer-wiki-link {
+    display: block;
+    margin-top: 16px;
+    padding: 11px;
+    background: var(--water-pale);
+    border: 1px solid var(--water-light);
+    border-radius: 8px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--water-deep);
+    text-decoration: none;
+    letter-spacing: 0.05em;
+    font-family: 'Noto Sans JP', sans-serif;
+    transition: background 0.15s;
+  }
+  .drawer-wiki-link:hover { background: var(--water-light); }
+
+  .drawer-no-result {
+    padding: 28px 18px;
+    text-align: center;
+  }
+  .drawer-no-result-icon { font-size: 28px; margin-bottom: 10px; }
+  .drawer-no-result-text {
+    font-size: 13px;
+    color: var(--ink-faint);
+    line-height: 1.8;
+    letter-spacing: 0.03em;
+  }
+
+  /* 水路カードにタップヒント */
+  .waterway-card { cursor: pointer; }
+  .waterway-card::after {
+    content: '詳細 ›';
+    font-size: 9px;
+    font-family: 'DM Mono', monospace;
+    color: var(--water-mid);
+    opacity: 0;
+    transition: opacity 0.2s;
+    margin-left: auto;
+    align-self: center;
+    flex-shrink: 0;
+  }
+  .waterway-card:hover::after { opacity: 1; }
+
+  /* ── ボトムナビ ──────────────────────────────────── */
+  .bottom-nav {
+    position: sticky;
+    bottom: 0;
+    z-index: 150;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    background: var(--white);
+    border-top: 1px solid var(--stone);
+    box-shadow: 0 -2px 12px rgba(45,90,107,0.08);
+  }
+
+  .bnav-btn {
+    padding: 11px 8px 10px;
+    border: none;
+    background: none;
+    font-family: 'Noto Sans JP', sans-serif;
+    font-size: 11px;
+    color: var(--ink-faint);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    transition: background 0.15s, color 0.15s;
+    letter-spacing: 0.05em;
+    border-top: 2px solid transparent;
+  }
+
+  .bnav-btn.active {
+    color: var(--water-deep);
+    border-top-color: var(--water-mid);
+    background: var(--water-mist);
+  }
+
+  .bnav-icon { font-size: 18px; line-height: 1; }
+  .bnav-label { font-size: 10px; }
+
+  /* ── 施設セクション ───────────────────────────────── */
+  .facility-section {
+    border-top: 1px solid var(--stone);
+  }
+
+  .facility-tabs {
+    display: flex;
+    gap: 6px;
+    padding: 12px 16px 8px;
+    background: var(--water-mist);
+    border-bottom: 1px solid var(--stone);
+  }
+
+  .ftab {
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--stone-dark);
+    background: white;
+    font-family: 'Noto Sans JP', sans-serif;
+    font-size: 11px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: all 0.15s;
+  }
+
+  .ftab.active {
+    background: var(--water-deep);
+    border-color: var(--water-deep);
+    color: white;
+  }
+
+  #facilityList {
+    padding: 12px 16px 16px;
+  }
+
+  /* 施設カード */
+  .facility-card {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    background: white;
+    border: 1px solid var(--stone);
+    border-radius: 10px;
+    padding: 11px 13px;
+    margin-bottom: 7px;
+    cursor: pointer;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  .facility-card:last-child { margin-bottom: 0; }
+
+  .facility-card:hover {
+    border-color: var(--water-light);
+    box-shadow: 0 2px 8px rgba(45,90,107,0.08);
+  }
+
+  .fac-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 17px;
+    flex-shrink: 0;
+  }
+
+  .fac-icon-toilet  { background: #e8f4fd; }
+  .fac-icon-conbini { background: #fdf5e8; }
+
+  .fac-info { flex: 1; min-width: 0; }
+
+  .fac-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .fac-meta {
+    font-size: 10px;
+    color: var(--ink-faint);
+    margin-top: 2px;
+    font-family: 'DM Mono', monospace;
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+
+  .fac-tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    background: var(--water-pale);
+    color: var(--water-deep);
+  }
+
+  .fac-tag-24h  { background: #e8f8e8; color: #2a6b2a; }
+  .fac-tag-fee  { background: #fdf0e8; color: #805020; }
+  .fac-tag-free { background: #e8f4fd; color: #205080; }
+
+  .fac-dist {
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--water-mid);
+    white-space: nowrap;
+    flex-shrink: 0;
+    text-align: right;
+  }
+
+  .facility-loading {
+    text-align: center;
+    padding: 24px 0;
+    color: var(--ink-faint);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+  }
+
+  /* ── 最寄り水路ハイライト ────────────────────────── */
+  .nearest-section {
+    border-bottom: 1px solid var(--stone);
+    background: var(--water-mist);
+  }
+
+  .nearest-inner {
+    padding: 14px 20px 16px;
+  }
+
+  .nearest-eyebrow {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--ink-faint);
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+
+  .nearest-card {
+    background: white;
+    border: 1px solid var(--water-light);
+    border-radius: 12px;
+    padding: 14px 16px;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    transition: box-shadow 0.2s;
+  }
+
+  .nearest-card::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--water-mid);
+    border-radius: 4px 0 0 4px;
+  }
+
+  .nearest-card:hover {
+    box-shadow: 0 3px 12px rgba(45,90,107,0.12);
+  }
+
+  .nearest-dist {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--water-mid);
+    margin-bottom: 3px;
+    letter-spacing: 0.05em;
+  }
+
+  .nearest-name {
+    font-family: 'Noto Serif JP', serif;
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--water-deep);
+    letter-spacing: 0.04em;
+    line-height: 1.3;
+  }
+
+  .nearest-type {
+    font-size: 11px;
+    color: var(--ink-faint);
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .nearest-hint {
+    font-size: 10px;
+    color: var(--water-mid);
+    margin-top: 8px;
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.05em;
+  }
+
+  /* ── 水系補足バッジ ──────────────────────────────── */
+  .watershed-badge-small {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 8px;
+    padding: 4px 10px;
+    background: var(--water-pale);
+    border: 1px solid var(--water-light);
+    border-radius: 20px;
+    font-size: 10px;
+    color: var(--water-deep);
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.06em;
+  }
+  .watershed-badge-small::before {
+    content: '水系';
+    font-size: 8px;
+    background: var(--water-mid);
+    color: white;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+  }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div>
+    <div class="app-title">川めぐりマップ</div>
+    <div class="app-subtitle">WATERWAY &amp; ANKYО WALK</div>
+  </div>
+  <span class="version-tag">v2.6</span>
+</header>
+
+<!-- 現在地 -->
+<section class="location-section">
+  <button class="location-btn" id="locationBtn" onclick="startLocating()">
+    <span id="btnIcon">◉</span>
+    <span id="btnText">現在地を取得する</span>
+  </button>
+  <div class="coords-row">
+    <div class="coord-card">
+      <div class="coord-label">LAT</div>
+      <div class="coord-value" id="latVal">—</div>
+    </div>
+    <div class="coord-card">
+      <div class="coord-label">LNG</div>
+      <div class="coord-value" id="lngVal">—</div>
+    </div>
+    <div class="coord-card">
+      <div class="coord-label">STATUS</div>
+      <div class="coord-value" id="statusVal">
+        <span class="status-dot" id="statusDot"></span><span id="statusText">待機中</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 最寄り水路ハイライト -->
+<section class="nearest-section" id="nearestSection" style="display:none">
+  <div class="nearest-inner" id="nearestInner"></div>
+</section>
+
+<!-- 地図 -->
+<section class="map-section">
+  <div class="map-header">
+    <div class="eyebrow" style="margin-bottom:0">MAP</div>
+    <div class="osm-badge"><span class="osm-dot"></span>OpenStreetMap</div>
+  </div>
+  <div id="map"></div>
+  <div class="map-caption" id="mapCaption">地図をタップして判定地点を移動できます</div>
+</section>
+
+<!-- 水路リスト -->
+<section class="waterways-section">
+  <div class="eyebrow">
+    ちかくの水路・暗渠
+    <span class="waterway-count" id="waterwayCount"></span>
+  </div>
+  <div id="waterwaysList">
+    <div style="text-align:center;padding:20px 0;color:var(--stone-dark);font-size:12px;letter-spacing:0.1em;">
+      現在地を取得後に表示されます
+    </div>
+  </div>
+</section>
+
+<!-- 凡例 -->
+<section class="legend">
+  <div class="legend-title">水路の種別 / WATERWAY TYPES</div>
+  <div class="legend-grid">
+    <div class="legend-item"><span class="legend-dot" style="background:#2d6880"></span>river — 河川</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#4a8fa3"></span>stream — 小川</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#2d8060"></span>canal — 用水路</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#406030"></span>drain — 排水路</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#6b5fa0"></span>culvert — 暗渠</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#907050"></span>ditch — 水路</div>
+  </div>
+  <div class="legend-culvert-note">
+    ⌇ 暗渠（culvert）は地図上では破線で表示されます。<br>
+    カードをタップすると Wikipedia などの詳細情報を確認できます。
+  </div>
+</section>
+
+
+
+<!-- ウィキ情報ドロワー -->
+<div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="infoDrawer">
+  <div class="drawer-handle"></div>
+  <div class="drawer-header">
+    <div class="drawer-type-tag" id="drawerTypeTag">WATERWAY INFO</div>
+    <div class="drawer-title" id="drawerTitle">—</div>
+    <div class="drawer-dist" id="drawerDist"></div>
+  </div>
+  <div class="drawer-body" id="drawerBody">
+    <div class="drawer-loading">
+      <div class="drawer-spinner"></div><br>
+      <span style="font-size:12px;letter-spacing:0.08em">情報を取得中…</span>
+    </div>
+  </div>
+</div>
+
+<!-- ボトムナビ -->
+<nav class="bottom-nav">
+  <button class="bnav-btn active" id="bnavWater" onclick="switchTab('water')">
+    <span class="bnav-icon">〜</span>
+    <span class="bnav-label">水路</span>
+  </button>
+  <button class="bnav-btn" id="bnavFacility" onclick="switchTab('facility')">
+    <span class="bnav-icon">🗺</span>
+    <span class="bnav-label">周辺施設</span>
+  </button>
+</nav>
+
+<!-- 施設リストパネル（水路セクションと切り替え） -->
+<section class="facility-section" id="facilitySection" style="display:none">
+  <div class="facility-tabs">
+    <button class="ftab active" id="ftabAll"     onclick="filterFacility('all')">すべて</button>
+    <button class="ftab"        id="ftabToilet"  onclick="filterFacility('toilet')">🚻 トイレ</button>
+    <button class="ftab"        id="ftabConbini" onclick="filterFacility('conbini')">🏪 コンビニ</button>
+  </div>
+  <div id="facilityList">
+    <div style="text-align:center;padding:24px 0;color:var(--stone-dark);font-size:12px;letter-spacing:0.1em">
+      現在地を取得後に表示されます
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="footer-text">
+    川めぐりマップ — 水路・暗渠さんぽ<br>
+    水路・施設データ: © OpenStreetMap contributors<br>
+    Overpass API によるリアルタイム取得
+  </div>
+</footer>
+
+<script>
+// ─── 状態 ───────────────────────────────────────────
+let map = null;
+let userLat = null, userLng = null;
+let waterwayLayers = [];
+let userMarker = null;
+let fetchedWaterways = [];
+
+// ─── Leaflet地図初期化 ───────────────────────────────
+function initMap(lat, lng) {
+  if (map) {
+    map.setView([lat, lng], 15);
+    return;
+  }
+  map = L.map('map', { zoomControl: true, attributionControl: false }).setView([lat, lng], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, opacity: 0.88
+  }).addTo(map);
+
+  // 地図クリック/タップで任意地点に移動
+  map.on('click', function(e) {
+    moveToLocation(e.latlng.lat, e.latlng.lng);
+  });
+}
+
+function updateUserMarker(lat, lng) {
+  if (userMarker) { try { map.removeLayer(userMarker); } catch(e) {} }
+  const icon = L.divIcon({
+    className: '',
+    html: `<div style="
+      width:14px;height:14px;
+      background:#2d5a6b;
+      border:3px solid white;
+      border-radius:50%;
+      box-shadow:0 2px 8px rgba(45,90,107,0.5);
+      position:relative;
+    ">
+      <div style="
+        position:absolute;
+        top:-8px;left:-8px;
+        width:30px;height:30px;
+        border:2px solid rgba(45,90,107,0.25);
+        border-radius:50%;
+        animation:ripple 2s ease-out infinite;
+      "></div>
+    </div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7]
+  });
+  userMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
+  userMarker.bindPopup('<b style="font-family:sans-serif;font-size:12px;">📍 現在地</b>').openPopup();
+}
+// ─── 現在地取得 ──────────────────────────────────────
+function startLocating() {
+  setStatus('loading', '取得中…');
+  document.getElementById('locationBtn').disabled = true;
+  document.getElementById('btnText').textContent = '取得中…';
+
+  if (!navigator.geolocation) {
+    // Geolocation非対応ブラウザ: デモ座標（前橋市周辺）
+    useDemoLocation();
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    pos => onGotLocation(pos.coords.latitude, pos.coords.longitude),
+    err => {
+      console.warn('Geolocation error:', err.code);
+      // 失敗時はデモ座標でフォールバック
+      useDemoLocation();
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 }
+  );
+}
+
+function useDemoLocation() {
+  // 前橋市・広瀬川付近（群馬）
+  onGotLocation(36.3912, 139.0608, true);
+}
+
+
+// ─── 任意地点移動 ─────────────────────────────────────
+function moveToLocation(lat, lng, isManual = true) {
+  userLat = lat; userLng = lng;
+
+  document.getElementById('latVal').textContent  = lat.toFixed(5);
+  document.getElementById('lngVal').textContent  = lng.toFixed(5);
+
+  if (isManual) {
+    setStatus('active', '移動済み');
+    document.getElementById('mapCaption').textContent = `📍 ${lat.toFixed(4)}, ${lng.toFixed(4)} — 地図をタップで再移動`;
+  }
+
+  updateUserMarker(lat, lng);
+
+  // 水路データを取得
+  fetchWaterways(lat, lng);
+
+  // 施設タブが開いていれば施設も再取得
+  if (currentTab === 'facility') {
+    fetchedFacilities = [];
+    fetchFacilities(lat, lng);
+  } else {
+    fetchedFacilities = []; // キャッシュクリア（次回タブを開いたとき再取得）
+    facilityMarkers.forEach(m => { try { map.removeLayer(m); } catch(e) {} });
+    facilityMarkers = [];
+  }
+}
+
+
+function onGotLocation(lat, lng, isDemo = false) {
+  setStatus('active', isDemo ? 'デモ' : '取得済み');
+  document.getElementById('locationBtn').disabled = false;
+  document.getElementById('btnText').textContent = '現在地を再取得';
+
+  // 地図が未初期化なら初期化してから移動
+  if (!map) {
+    initMap(lat, lng);
+  }
+  moveToLocation(lat, lng, false);
+}
+
+function setStatus(type, text) {
+  const dot = document.getElementById('statusDot');
+  dot.className = 'status-dot ' + (type === 'active' ? 'active' : type === 'loading' ? 'loading' : type === 'error' ? 'error' : '');
+  document.getElementById('statusText').textContent = text;
+}
+
+// ─── Overpass API で水路取得 ──────────────────────────
+async function fetchWaterways(lat, lng) {
+  const listEl = document.getElementById('waterwaysList');
+  listEl.innerHTML = `<div class="loading-area"><div class="spinner"></div><span class="loading-text">Overpass APIから取得中…</span></div>`;
+  document.getElementById('waterwayCount').textContent = '';
+
+  // 水路レイヤーをクリア（既に削除済みでもエラーにならないよう安全に）
+  waterwayLayers.forEach(l => { try { map.removeLayer(l); } catch(e) {} });
+  waterwayLayers = [];
+
+  // Overpass QL クエリ: 半径800m以内のすべての水路
+  const r = 800;
+  const query = `
+    [out:json][timeout:25];
+    (
+      way["waterway"~"^(river|stream|canal|drain|ditch|culvert)$"](around:${r},${lat},${lng});
+      way["waterway"]["tunnel"="culvert"](around:${r},${lat},${lng});
+    );
+    out body geom;
+  `;
+
+  const url = 'https://overpass-api.de/api/interpreter';
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      body: 'data=' + encodeURIComponent(query),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    processOverpassData(data, lat, lng);
+
+  } catch (err) {
+    console.error('Overpass error:', err);
+    listEl.innerHTML = `
+      <div class="error-card">
+        ⚠ データ取得に失敗しました。ネットワークを確認して再試行してください。<br>
+        <small style="opacity:0.7;font-family:monospace">${err.message}</small>
+      </div>`;
+  }
+}
+
+// ─── Overpassデータ処理 ───────────────────────────────
+function processOverpassData(data, centerLat, centerLng) {
+  // geometry付き（out body geom）とnode別（out body）両対応
+  const nodeMap = {};
+  data.elements.forEach(el => {
+    if (el.type === 'node') nodeMap[el.id] = [el.lat, el.lon];
+  });
+
+  const ways = data.elements.filter(el => el.type === 'way' && el.tags);
+
+  const results = ways.map(way => {
+    // geometry直付き（out geom）優先、なければnodeMapから復元
+    let coords;
+    if (way.geometry && way.geometry.length > 0) {
+      coords = way.geometry.map(pt => [pt.lat, pt.lon]);
+    } else {
+      coords = (way.nodes || []).map(nid => nodeMap[nid]).filter(Boolean);
+    }
+    if (coords.length === 0) return null;
+
+    // ── 全ノードから最短距離を使う（中心点だと長い川が遠くなるバグを修正）
+    let minDist = Infinity;
+    let closestCoord = coords[0];
+    for (const pt of coords) {
+      const d = haversine(centerLat, centerLng, pt[0], pt[1]);
+      if (d < minDist) { minDist = d; closestCoord = pt; }
+    }
+
+    const tags = way.tags;
+    const waterwayType = tags.waterway || 'unknown';
+    const isCulvert = tags.tunnel === 'culvert' || waterwayType === 'culvert';
+    const name = tags.name || tags['name:ja'] || tags['name:en'] || null;
+    const altName = tags.alt_name || tags.old_name || null;
+
+    return { id: way.id, coords, closestCoord, dist: minDist, waterwayType, isCulvert, name, altName, tags };
+  }).filter(Boolean);
+
+  // 距離でソート
+  results.sort((a, b) => a.dist - b.dist);
+
+  // 重複名除去＆上位8件
+  const seen = new Set();
+  const deduped = [];
+  for (const r of results) {
+    const key = r.name || r.id;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(r);
+    }
+    if (deduped.length >= 20) break;
+  }
+
+  fetchedWaterways = deduped;
+  renderWaterwayLines(deduped);
+  renderWaterwayList(deduped.slice(0, 5));
+  renderNearestWaterway(deduped);
+}
+
+// ── 水系推定（軽量版）────────────────────────────────
+// 取得済みのriver wayから水系名を推定する
+function guessWatershed(ways) {
+  // 最初に見つかったriver/canalの名前から水系を推定
+  const mainRiver = ways.find(w => w.waterwayType === 'river' && w.name);
+  if (!mainRiver) return null;
+
+  const name = mainRiver.name;
+  // 「○○川」→「○○川水系」
+  if (name.endsWith('川') || name.endsWith('河')) return name + '水系';
+  if (name.endsWith('用水') || name.endsWith('用水路')) return name;
+  return name + '流域';
+}
+
+// ── 最寄り水路ハイライト ──────────────────────────────
+function renderNearestWaterway(ways) {
+  const sec   = document.getElementById('nearestSection');
+  const inner = document.getElementById('nearestInner');
+  if (!sec || !inner) return;
+  if (!ways || ways.length === 0) { sec.style.display = 'none'; return; }
+
+  // 名前ありを優先、なければ距離順1位
+  const named   = ways.find(w => w.name);
+  const nearest = named || ways[0];
+
+  const typeLabel = waterwayLabel(nearest.waterwayType, nearest.isCulvert);
+  const icon      = waterwayIcon(nearest.waterwayType, nearest.isCulvert);
+
+  // 水系バッジ（riverが複数ある場合は最も近いriverを水系名に）
+  const watershed = guessWatershed(ways);
+  const watershedBadge = watershed
+    ? `<div class="watershed-badge-small">${watershed}</div>`
+    : '';
+
+  inner.innerHTML = `
+    <div class="nearest-eyebrow">いちばん近い水路</div>
+    <div class="nearest-card">
+      <div class="nearest-dist">${icon} ${formatDist(nearest.dist)} 先</div>
+      <div class="nearest-name">${nearest.name || '無名の' + typeLabel}</div>
+      <div class="nearest-type">
+        <span>${typeLabel}</span>
+        ${nearest.isCulvert ? '<span style="color:var(--culvert)">暗渠</span>' : ''}
+        ${nearest.altName ? '<span style="color:var(--ink-faint)">別名: ' + nearest.altName + '</span>' : ''}
+      </div>
+      ${watershedBadge}
+      <div class="nearest-hint">タップして詳細・Wikipedia情報を見る →</div>
+    </div>
+  `;
+
+  inner.querySelector('.nearest-card').onclick = () => openDrawer(nearest, 0);
+  sec.style.display = '';
+  sec.classList.add('fade-in');
+}
+
+
+function waterwayColor(type, isCulvert) {
+  if (isCulvert) return '#7b6fbb';
+  switch (type) {
+    case 'river': return '#2d6880';
+    case 'stream': return '#4a8fa3';
+    case 'canal': return '#2d8060';
+    case 'drain': return '#608040';
+    case 'ditch': return '#907050';
+    default: return '#4a8fa3';
+  }
+}
+
+function waterwayIcon(type, isCulvert) {
+  if (isCulvert) return '⌇';
+  switch (type) {
+    case 'river': return '〜';
+    case 'stream': return '∿';
+    case 'canal': return '⊟';
+    case 'drain': return '⊏';
+    case 'ditch': return '∣';
+    default: return '〜';
+  }
+}
+
+function waterwayLabel(type, isCulvert) {
+  if (isCulvert) return '暗渠';
+  switch (type) {
+    case 'river': return '河川';
+    case 'stream': return '小川';
+    case 'canal': return '用水路';
+    case 'drain': return '排水路';
+    case 'ditch': return '水路';
+    default: return '水路';
+  }
+}
+
+// ─── 地図に水路を描画 ─────────────────────────────────
+function renderWaterwayLines(ways) {
+  ways.forEach((w, idx) => {
+    const color = waterwayColor(w.waterwayType, w.isCulvert);
+    const dashArray = w.isCulvert ? '5, 5' : null;
+    const weight = w.waterwayType === 'river' ? 3.5 : 2;
+
+    const latlngs = w.coords.map(c => [c[0], c[1]]);
+    const line = L.polyline(latlngs, {
+      color,
+      weight,
+      opacity: 0.75,
+      dashArray
+    }).addTo(map);
+
+    const label = w.name || waterwayLabel(w.waterwayType, w.isCulvert);
+    const distStr = formatDist(w.dist);
+    line.bindPopup(`
+      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+        <b>${label}</b><br>
+        <span style="color:#7a9aaa;font-size:10px;font-family:monospace">${waterwayLabel(w.waterwayType, w.isCulvert)}${w.isCulvert ? ' · 暗渠' : ''} · ${distStr}</span>
+        ${w.altName ? `<br><span style="color:#aaa;font-size:10px">別名: ${w.altName}</span>` : ''}
+      </div>
+    `);
+
+    waterwayLayers.push(line);
+  });
+}
+
+// ─── 水路リスト描画 ───────────────────────────────────
+function renderWaterwayList(ways) {
+  const listEl = document.getElementById('waterwaysList');
+  document.getElementById('waterwayCount').textContent = `${fetchedWaterways.length}件`;
+
+  if (ways.length === 0) {
+    listEl.innerHTML = `<div style="text-align:center;padding:20px 0;color:var(--stone-dark);font-size:12px">この周辺には登録された水路が見つかりませんでした</div>`;
+    return;
+  }
+
+  listEl.innerHTML = '';
+  ways.forEach((w, i) => {
+    const name = w.name || `無名の${waterwayLabel(w.waterwayType, w.isCulvert)}`;
+    const typeClass = `wtype-${w.isCulvert ? 'culvert' : w.waterwayType}`;
+    const tagClass = `tag-${w.isCulvert ? 'culvert' : (w.waterwayType || 'default')}`;
+    const tagText = waterwayLabel(w.waterwayType, w.isCulvert) + (w.isCulvert ? ' · 暗渠' : '');
+
+    const card = document.createElement('div');
+    card.className = 'waterway-card fade-in';
+    card.style.animationDelay = `${i * 0.07}s`;
+    card.style.animationFillMode = 'both';
+    card.innerHTML = `
+      <div class="wtype-icon ${typeClass}">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>
+      <div class="winfo">
+        <div class="wname">${name}</div>
+        <div class="wmeta">
+          <span class="wmeta-tag ${tagClass}">${tagText}</span>
+          ${w.altName ? `<span style="color:var(--ink-faint)">別名: ${w.altName}</span>` : ''}
+          ${w.tags.ref ? `<span style="color:var(--ink-faint)">${w.tags.ref}</span>` : ''}
+        </div>
+      </div>
+      <div class="wdist">${formatDist(w.dist)}</div>
+    `;
+
+    // クリック: ドロワーを開きWikipedia情報を表示
+    card.onclick = () => {
+      openDrawer(w, i);
+    };
+
+    listEl.appendChild(card);
+  });
+
+  // 5件以上あれば「もっと見る」
+  if (fetchedWaterways.length > 5) {
+    const more = document.createElement('button');
+    more.style.cssText = `
+      width:100%;margin-top:8px;padding:9px;border:1px dashed var(--stone-dark);
+      background:none;border-radius:8px;font-size:11px;color:var(--ink-faint);
+      font-family:'Noto Sans JP',sans-serif;cursor:pointer;letter-spacing:0.05em;
+    `;
+    more.textContent = `さらに ${fetchedWaterways.length - 5} 件を表示`;
+    more.onclick = () => {
+      renderWaterwayList(fetchedWaterways);
+    };
+    listEl.appendChild(more);
+  }
+}
+
+// ─── ユーティリティ ───────────────────────────────────
+function haversine(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function formatDist(m) {
+  return m < 1000 ? `${Math.round(m)}m` : `${(m/1000).toFixed(1)}km`;
+}
+
+
+
+// ── ドロワー制御 ─────────────────────────────────────
+function openDrawer(w, layerIdx) {
+  const overlay = document.getElementById('drawerOverlay');
+  const drawer  = document.getElementById('infoDrawer');
+  const body    = document.getElementById('drawerBody');
+
+  // ヘッダー設定
+  const name = w.name || ('無名の' + waterwayLabel(w.waterwayType, w.isCulvert));
+  document.getElementById('drawerTitle').textContent = name;
+  document.getElementById('drawerTypeTag').textContent =
+    waterwayLabel(w.waterwayType, w.isCulvert).toUpperCase()
+    + (w.isCulvert ? ' · 暗渠' : '');
+  document.getElementById('drawerDist').textContent =
+    '現在地から約 ' + formatDist(w.dist);
+
+  // ローディング状態
+  body.innerHTML = `<div class="drawer-loading">
+    <div class="drawer-spinner"></div><br>
+    <span style="font-size:12px;letter-spacing:0.08em;color:var(--ink-faint)">情報を取得中…</span>
+  </div>`;
+
+  // ドロワーを開く
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  // 地図を該当水路に移動
+  if (w.coords && w.coords.length > 0 && map) {
+    const midPt = w.coords[Math.floor(w.coords.length / 2)];
+    map.flyTo([midPt[0], midPt[1]], 16, { duration: 0.8 });
+  }
+
+  // Wikipedia情報を取得
+  if (w.name) {
+    fetchWikiInfo(w.name, w, body);
+  } else {
+    renderNoWikiResult(body, w);
+  }
+}
+
+function closeDrawer() {
+  document.getElementById('drawerOverlay').classList.remove('open');
+  document.getElementById('infoDrawer').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// スワイプで閉じる
+(function() {
+  let startY = 0;
+  const drawer = document.getElementById('infoDrawer');
+  drawer.addEventListener('touchstart', e => { startY = e.touches[0].clientY; }, { passive: true });
+  drawer.addEventListener('touchend', e => {
+    const dy = e.changedTouches[0].clientY - startY;
+    if (dy > 60) closeDrawer();
+  }, { passive: true });
+})();
+
+// ── Wikipedia REST API ───────────────────────────────
+async function fetchWikiInfo(name, w, bodyEl) {
+  // Step1: Wikipedia Search API で部分一致検索（曖昧一致に強い）
+  try {
+    const searchUrl = 'https://ja.wikipedia.org/w/api.php?'
+      + 'action=query&list=search&format=json&origin=*&srlimit=5&srsearch='
+      + encodeURIComponent(name);
+    const sRes = await fetch(searchUrl);
+    const sData = await sRes.json();
+    const hits = (sData.query?.search || []);
+
+    // ヒットした記事タイトルを順に summary APIで取得
+    for (const hit of hits) {
+      // 地名・水路関係でなさそうなものをスキップ（人名・アルバム等）
+      const t = hit.title;
+      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
+      if (!isLikelyWaterway(t, snippet, name)) continue;
+
+      try {
+        const sumUrl = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+          + encodeURIComponent(t);
+        const sumRes = await fetch(sumUrl, { headers: { 'Accept': 'application/json' } });
+        if (!sumRes.ok) continue;
+        const sumData = await sumRes.json();
+        if (sumData.type === 'disambiguation') continue;
+        if (!sumData.extract || sumData.extract.length < 40) continue;
+
+        renderWikiResult(sumData, w, bodyEl);
+        return;
+      } catch(e) { continue; }
+    }
+  } catch(e) { /* search API失敗時はStep2へ */ }
+
+  // Step2: 直接タイトル一致（フォールバック）
+  const candidates = buildWikiCandidates(name);
+  for (const candidate of candidates) {
+    try {
+      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+        + encodeURIComponent(candidate);
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (data.type === 'disambiguation') continue;
+      if (!data.extract || data.extract.length < 40) continue;
+      renderWikiResult(data, w, bodyEl);
+      return;
+    } catch(e) { continue; }
+  }
+
+  renderNoWikiResult(bodyEl, w);
+}
+
+// 水路・地理系の記事かを簡易判定
+function isLikelyWaterway(title, snippet, originalName) {
+  const combined = title + ' ' + (snippet || '');
+
+  // ── NG① タイトルに人物・施設・エンタメ語が含まれる ─────
+  const titleNg = [
+    '駅', '空港', '高速道路', 'インターチェンジ', 'ジャンクション',
+    'アルバム', 'シングル', '楽曲', '映画', 'ドラマ', 'アニメ', '漫画', '小説', 'ゲーム',
+    '神社', '寺院', '城跡', '学校', '大学', '病院',
+  ];
+  if (titleNg.some(w => title.includes(w))) return false;
+
+  // ── NG② snippet（記事冒頭）に人物を示す語が含まれる ────
+  // 例: 「広瀬すず（ひろせ すず）は、日本の女優」
+  const snippetNg = [
+    'は、日本の', 'は日本の',          // 「○○は、日本の俳優」パターン
+    '（生まれ）', '(born ', 'born in',
+    'スケーター', 'スポーツ選手', 'サッカー選手', '野球選手', '陸上選手',
+    '俳優', '女優', '声優', '歌手', '芸人', 'アイドル',
+    '政治家', '実業家', '官僚', '軍人', '武将', '僧侶',
+    '画家', '彫刻家', '建築家', '写真家', '小説家', '詩人', '作曲家',
+  ];
+  if (snippetNg.some(w => combined.includes(w))) return false;
+
+  // ── OK: 水路・地理系キーワードがあればOK ───────────────
+  const okWords = ['川', '河川', '用水', '水路', '堀', '運河', '湖', '池', '沼',
+                   '湿地', '流域', '水系', '源流', '暗渠', '疏水', '堰', '港湾',
+                   '河口', '支流', '本流', '分流', '灌漑', '一級河川', '二級河川'];
+  if (okWords.some(w => combined.includes(w))) return true;
+
+  // 元の川の名前がタイトルに含まれていればOK（地域限定記事など）
+  const core = originalName.replace(/^旧/, '').replace(/緑道$|遊歩道$|親水$/, '');
+  if (title.includes(core) && core.length >= 2) return true;
+
+  return false;
+}
+
+function buildWikiCandidates(name) {
+  const candidates = [name];
+  if (name.startsWith('旧')) candidates.push(name.slice(1));
+  const stripped = name.replace(/緑道$|遊歩道$|公園$|親水$/, '');
+  if (stripped !== name) candidates.push(stripped);
+  if (name.endsWith('路')) candidates.push(name.slice(0, -1));
+  if (name.includes('支流')) candidates.push(name.replace('支流', '').trim());
+  return [...new Set(candidates)];
+}
+
+function renderWikiResult(data, w, bodyEl) {
+  const thumb = data.thumbnail?.source;
+  const wikiUrl = data.content_urls?.desktop?.page || data.content_urls?.mobile?.page;
+  const extract = data.extract || '';
+
+  // OSMタグから補足情報
+  const osmMeta = buildOsmMeta(w);
+
+  bodyEl.innerHTML = `
+    ${thumb
+      ? `<img class="drawer-thumb" src="${thumb}" alt="${data.title}" loading="lazy">`
+      : `<div class="drawer-thumb-placeholder">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>`
+    }
+    <div class="drawer-content">
+      <p class="drawer-extract">${extract}</p>
+
+      ${osmMeta.length > 0 ? `
+        <div class="drawer-meta">
+          ${osmMeta.map(m => `
+            <div class="drawer-meta-row">
+              <span class="drawer-meta-label">${m.label}</span>
+              <span>${m.value}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      ${wikiUrl ? `
+        <a class="drawer-wiki-link" href="${wikiUrl}" target="_blank" rel="noopener">
+          Wikipedia で続きを読む →
+        </a>
+      ` : ''}
+
+      <div style="margin-top:12px;font-size:9px;color:var(--ink-faint);font-family:'DM Mono',monospace;text-align:right">
+        Source: Wikipedia / OpenStreetMap
+      </div>
+    </div>
+  `;
+}
+
+function renderNoWikiResult(bodyEl, w) {
+  const osmMeta = buildOsmMeta(w);
+  const name = w.name || '無名の水路';
+
+  bodyEl.innerHTML = `
+    <div class="drawer-thumb-placeholder">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>
+    <div class="drawer-content">
+      <div class="drawer-no-result">
+        <div class="drawer-no-result-icon">〜</div>
+        <p class="drawer-no-result-text">
+          「${name}」のWikipedia記事は見つかりませんでした。<br>
+          OpenStreetMapに登録されている情報を表示しています。
+        </p>
+      </div>
+
+      ${osmMeta.length > 0 ? `
+        <div class="drawer-meta">
+          ${osmMeta.map(m => `
+            <div class="drawer-meta-row">
+              <span class="drawer-meta-label">${m.label}</span>
+              <span>${m.value}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      <div style="margin-top:16px;padding:12px;background:var(--water-mist);border-radius:8px;font-size:11px;color:var(--ink-faint);line-height:1.8;letter-spacing:0.03em">
+        この水路は${waterwayLabel(w.waterwayType, w.isCulvert)}です。
+        ${w.isCulvert ? '現在は地下に埋設され、暗渠となっています。かつての流路が緑道や道路の曲がりとして地上に痕跡を残しています。' : ''}
+        地図上で水路をタップするとOpenStreetMapの詳細情報を確認できます。
+      </div>
+
+      <div style="margin-top:10px;font-size:9px;color:var(--ink-faint);font-family:'DM Mono',monospace;text-align:right">
+        Source: OpenStreetMap contributors
+      </div>
+    </div>
+  `;
+}
+
+function buildOsmMeta(w) {
+  const tags = w.tags || {};
+  const meta = [];
+  if (w.waterwayType) meta.push({ label: '種別', value: waterwayLabel(w.waterwayType, w.isCulvert) + (w.isCulvert ? '（暗渠）' : '') });
+  if (tags.ref)       meta.push({ label: 'REF', value: tags.ref });
+  if (tags.start_date || tags.year) meta.push({ label: '整備年', value: tags.start_date || tags.year });
+  if (tags.operator)  meta.push({ label: '管理', value: tags.operator });
+  if (tags.description) meta.push({ label: '備考', value: tags.description });
+  if (tags['name:en']) meta.push({ label: 'EN', value: tags['name:en'] });
+  if (w.altName)      meta.push({ label: '別名', value: w.altName });
+  meta.push({ label: 'OSM ID', value: 'way/' + w.id });
+  return meta;
+}
+
+
+// ── 施設データ ────────────────────────────────────────
+let fetchedFacilities = [];
+let facilityMarkers = [];
+let facilityFilter = 'all';
+let currentTab = 'water';
+
+// ── タブ切替 ──────────────────────────────────────────
+function switchTab(tab) {
+  currentTab = tab;
+  const waterSections = ['watershedSection','descSection','waterwaysSection','legendSection'];
+  const isWater = tab === 'water';
+
+  // 水路関連セクションの表示切替
+  document.querySelectorAll('.nearest-section, .waterways-section, .legend')
+    .forEach(el => el.style.display = isWater ? '' : 'none');
+  document.getElementById('facilitySection').style.display = isWater ? 'none' : '';
+
+  // ボトムナビのアクティブ状態
+  document.getElementById('bnavWater').classList.toggle('active', isWater);
+  document.getElementById('bnavFacility').classList.toggle('active', !isWater);
+
+  // 地図の水路マーカー/施設マーカー切替（安全な追加・削除）
+  if (map) {
+    waterwayLayers.forEach(l => {
+      try { isWater ? l.addTo(map) : map.removeLayer(l); } catch(e) {}
+    });
+    facilityMarkers.forEach(m => {
+      try { isWater ? map.removeLayer(m) : m.addTo(map); } catch(e) {}
+    });
+  }
+
+  // 施設タブを初めて開いたとき取得
+  if (!isWater && fetchedFacilities.length === 0 && userLat) {
+    fetchFacilities(userLat, userLng);
+  }
+}
+
+// ── 施設フィルタ ──────────────────────────────────────
+function filterFacility(type) {
+  facilityFilter = type;
+  document.querySelectorAll('.ftab').forEach(b => b.classList.remove('active'));
+  document.getElementById('ftab' + type.charAt(0).toUpperCase() + type.slice(1)).classList.add('active');
+  renderFacilityList(fetchedFacilities);
+}
+
+// ── Overpass で施設取得 ───────────────────────────────
+async function fetchFacilities(lat, lng) {
+  const listEl = document.getElementById('facilityList');
+  listEl.innerHTML = '<div class="facility-loading"><div class="spinner" style="margin:0 auto 8px"></div>周辺施設を取得中…</div>';
+
+  // 既存マーカー削除
+  facilityMarkers.forEach(m => { try { map.removeLayer(m); } catch(e) {} });
+  facilityMarkers = [];
+
+  const r = 800;
+  const query = `
+    [out:json][timeout:20];
+    (
+      node["amenity"="toilets"](around:${r},${lat},${lng});
+      node["shop"~"^(convenience|supermarket)$"](around:${r},${lat},${lng});
+      node["amenity"="convenience_store"](around:${r},${lat},${lng});
+    );
+    out body;
+  `;
+
+  try {
+    const res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: 'data=' + encodeURIComponent(query),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+    });
+    const data = await res.json();
+
+    fetchedFacilities = data.elements.map(e => {
+      const tags = e.tags || {};
+      const isToilet  = tags.amenity === 'toilets';
+      const isConbini = tags.shop === 'convenience' || tags.shop === 'supermarket'
+                     || tags.amenity === 'convenience_store';
+      const dist = haversine(lat, lng, e.lat, e.lon);
+      return {
+        id: e.id, lat: e.lat, lng: e.lon, dist,
+        name: tags.name || tags.brand || (isToilet ? '公衆トイレ' : 'コンビニ'),
+        type: isToilet ? 'toilet' : 'conbini',
+        fee: tags.fee,
+        hours: tags.opening_hours,
+        brand: tags.brand,
+        wheelchair: tags.wheelchair,
+        tags,
+      };
+    }).sort((a, b) => a.dist - b.dist);
+
+    renderFacilityList(fetchedFacilities);
+    renderFacilityMarkers(fetchedFacilities);
+
+  } catch(e) {
+    listEl.innerHTML = `<div class="error-card">⚠ 施設データの取得に失敗しました。<br><small>${e.message}</small></div>`;
+  }
+}
+
+// ── 施設リスト描画 ────────────────────────────────────
+function renderFacilityList(facilities) {
+  const listEl = document.getElementById('facilityList');
+  const filtered = facilityFilter === 'all'
+    ? facilities
+    : facilities.filter(f => f.type === facilityFilter);
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<div style="text-align:center;padding:20px 0;color:var(--stone-dark);font-size:12px">
+      この周辺には${facilityFilter === 'toilet' ? 'トイレ' : facilityFilter === 'conbini' ? 'コンビニ' : '施設'}が見つかりませんでした
+    </div>`;
+    return;
+  }
+
+  listEl.innerHTML = '';
+  filtered.slice(0, 10).forEach((f, i) => {
+    const card = document.createElement('div');
+    card.className = 'facility-card fade-in';
+    card.style.animationDelay = i * 0.06 + 's';
+    card.style.animationFillMode = 'both';
+
+    const icon  = f.type === 'toilet' ? '🚻' : brandIcon(f.brand);
+    const iclass = f.type === 'toilet' ? 'fac-icon-toilet' : 'fac-icon-conbini';
+
+    // タグ群
+    const tags = [];
+    if (f.hours === '24/7' || f.hours === '24時間') tags.push({ text: '24h', cls: 'fac-tag-24h' });
+    if (f.fee === 'yes')  tags.push({ text: '有料', cls: 'fac-tag-fee' });
+    if (f.fee === 'no')   tags.push({ text: '無料', cls: 'fac-tag-free' });
+    if (f.wheelchair === 'yes') tags.push({ text: '♿', cls: 'fac-tag' });
+    if (f.type === 'conbini' && f.brand) tags.push({ text: f.brand, cls: 'fac-tag' });
+
+    card.innerHTML = `
+      <div class="fac-icon ${iclass}">${icon}</div>
+      <div class="fac-info">
+        <div class="fac-name">${f.name}</div>
+        <div class="fac-meta">
+          ${tags.map(t => `<span class="fac-tag ${t.cls}">${t.text}</span>`).join('')}
+          ${f.hours && f.hours !== '24/7' ? `<span>${f.hours.slice(0,20)}</span>` : ''}
+        </div>
+      </div>
+      <div class="fac-dist">${formatDist(f.dist)}</div>
+    `;
+
+    card.onclick = () => {
+      if (map) map.flyTo([f.lat, f.lng], 17, { duration: 0.8 });
+      facilityMarkers.forEach(m => {
+        if (m._facilityId === f.id) m.openPopup();
+      });
+    };
+
+    listEl.appendChild(card);
+  });
+}
+
+// ── 地図に施設マーカー描画 ───────────────────────────
+function renderFacilityMarkers(facilities) {
+  facilityMarkers.forEach(m => { try { map.removeLayer(m); } catch(e) {} });
+  facilityMarkers = [];
+
+  facilities.forEach(f => {
+    const isToilet = f.type === 'toilet';
+    const color = isToilet ? '#4a7fa3' : '#e09040';
+    const emoji = isToilet ? '🚻' : brandIcon(f.brand);
+
+    const icon = L.divIcon({
+      className: '',
+      html: `<div style="
+        background:${color};color:white;
+        width:28px;height:28px;border-radius:8px;
+        display:flex;align-items:center;justify-content:center;
+        font-size:14px;box-shadow:0 2px 6px rgba(0,0,0,0.25);
+        border:2px solid white;
+      ">${emoji}</div>`,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+    });
+
+    const marker = L.marker([f.lat, f.lng], { icon });
+    marker._facilityId = f.id;
+    marker.bindPopup(`
+      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+        <b>${f.name}</b><br>
+        <span style="color:#7a9aaa;font-size:10px;font-family:monospace">
+          ${isToilet ? 'トイレ' : 'コンビニ'} · ${formatDist(f.dist)}
+          ${f.hours === '24/7' ? ' · 24h' : ''}
+          ${f.fee === 'no' ? ' · 無料' : f.fee === 'yes' ? ' · 有料' : ''}
+        </span>
+      </div>
+    `);
+
+    // 施設タブが開いているときだけ地図に表示
+    if (currentTab === 'facility') marker.addTo(map);
+    facilityMarkers.push(marker);
+  });
+}
+
+// ブランドアイコン
+function brandIcon(brand) {
+  if (!brand) return '🏪';
+  if (brand.includes('セブン') || brand.includes('7-Eleven')) return '7️⃣';
+  if (brand.includes('ファミリーマート') || brand.includes('FamilyMart')) return '🟢';
+  if (brand.includes('ローソン') || brand.includes('Lawson')) return '🔵';
+  if (brand.includes('ミニストップ')) return '🟡';
+  return '🏪';
+}
+
+</script>
+</body>
+</html>
