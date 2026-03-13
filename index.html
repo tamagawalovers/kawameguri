@@ -3,7 +3,24 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>いま何水系？</title>
+<title>川めぐりマップ — 水路・暗渠さんぽガイド</title>
+
+<!-- OGP / SNSカード -->
+<meta property="og:title" content="川めぐりマップ">
+<meta property="og:description" content="今いる場所の近くにある川・水路・暗渠を地図で見つけよう。多摩川水系の散歩に。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://tamagawalovers.github.io/kawameguri/">
+<meta property="og:image" content="https://tamagawalovers.github.io/kawameguri/ogp.png">
+<meta property="og:locale" content="ja_JP">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="川めぐりマップ">
+<meta name="twitter:description" content="今いる場所の近くにある川・水路・暗渠を地図で見つけよう。多摩川水系の散歩に。">
+<meta name="twitter:image" content="https://tamagawalovers.github.io/kawameguri/ogp.png">
+
+<!-- PWA / ブラウザ設定 -->
+<meta name="theme-color" content="#2d5a6b">
+<meta name="description" content="今いる場所の近くにある川・水路・暗渠を地図で見つけよう。水路さんぽ・暗渠ハンター向けスマホWebアプリ。">
+
 <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@300;400;500;700&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
@@ -66,51 +83,114 @@ function closeDrawer() {
 
 // ── Wikipedia REST API ───────────────────────────────
 async function fetchWikiInfo(name, w, bodyEl) {
-  // Step1: Wikipedia Search API で部分一致検索（曖昧一致に強い）
+  // ── ヘルパー: summary APIを取得して有効な水路記事かを返す ──
+  async function tryGetSummary(title, mustMatchName) {
+    try {
+      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+        + encodeURIComponent(title);
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.extract || data.extract.length < 40) return null;
+
+      // 曖昧さ回避ページ → 後で展開するのでここではnull
+      if (data.type === 'disambiguation') return { type: 'disambiguation', title };
+
+      // mustMatchName=true のとき: タイトルに検索語のコアが含まれるか確認
+      if (mustMatchName) {
+        const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+        if (!data.title.includes(core)) return null;
+      }
+
+      // 人物・施設記事を除外
+      if (!isLikelyWaterway(data.title, data.extract.slice(0, 120), name)) return null;
+
+      return data;
+    } catch(e) { return null; }
+  }
+
+  // ── Step1: 検索語と一致するタイトルを優先的に探す ──────────
   try {
     const searchUrl = 'https://ja.wikipedia.org/w/api.php?'
-      + 'action=query&list=search&format=json&origin=*&srlimit=5&srsearch='
+      + 'action=query&list=search&format=json&origin=*&srlimit=8&srsearch='
       + encodeURIComponent(name);
     const sRes = await fetch(searchUrl);
     const sData = await sRes.json();
     const hits = (sData.query?.search || []);
 
-    // ヒットした記事タイトルを順に summary APIで取得
-    for (const hit of hits) {
-      // 地名・水路関係でなさそうなものをスキップ（人名・アルバム等）
-      const t = hit.title;
-      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
-      if (!isLikelyWaterway(t, snippet, name)) continue;
+    // パス① タイトルが検索語と完全一致 or 「検索語 (地域名)」形式
+    const exactHits = hits.filter(h => {
+      const t = h.title;
+      return t === name || t.startsWith(name + ' ') || t.startsWith(name + '（') || t.startsWith(name + '(');
+    });
 
-      try {
-        const sumUrl = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
-          + encodeURIComponent(t);
-        const sumRes = await fetch(sumUrl, { headers: { 'Accept': 'application/json' } });
-        if (!sumRes.ok) continue;
-        const sumData = await sumRes.json();
-        if (sumData.type === 'disambiguation') continue;
-        if (!sumData.extract || sumData.extract.length < 40) continue;
+    // パス② 曖昧さ回避ページを先に展開して候補を追加
+    const disambigExpanded = [];
+    for (const hit of exactHits) {
+      const result = await tryGetSummary(hit.title, true);
+      if (!result) continue;
+      if (result.type === 'disambiguation') {
+        // 曖昧さ回避ページの本文からリンク候補を取得
+        try {
+          const linksUrl = 'https://ja.wikipedia.org/w/api.php?'
+            + 'action=query&prop=links&titles=' + encodeURIComponent(hit.title)
+            + '&pllimit=20&format=json&origin=*';
+          const lRes = await fetch(linksUrl);
+          const lData = await lRes.json();
+          const pages = Object.values(lData.query?.pages || {});
+          const links = pages[0]?.links?.map(l => l.title) || [];
+          // 検索語を含むリンクのみ対象
+          const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+          for (const linkTitle of links.filter(t => t.includes(core))) {
+            disambigExpanded.push(linkTitle);
+          }
+        } catch(e) {}
+        continue;
+      }
+      // 曖昧さ回避でない正常な記事が見つかった
+      renderWikiResult(result, w, bodyEl);
+      return;
+    }
 
-        renderWikiResult(sumData, w, bodyEl);
+    // 曖昧さ回避ページから展開された候補を試す（都道府県名付きなど）
+    for (const title of disambigExpanded) {
+      const result = await tryGetSummary(title, true);
+      if (result && result.type !== 'disambiguation') {
+        renderWikiResult(result, w, bodyEl);
         return;
-      } catch(e) { continue; }
+      }
+    }
+
+    // パス③ タイトルが一致しない結果は「タイトルに検索語を含む」ものだけ許可
+    //   （「二ヶ領用水」のように検索語が本文内にあるだけのものを除外）
+    const relaxedHits = hits.filter(h => {
+      const t = h.title;
+      // exactHitsは既に処理済みなのでスキップ
+      if (exactHits.some(e => e.title === t)) return false;
+      const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+      // タイトルにコアを含まなければ除外
+      return t.includes(core) && core.length >= 2;
+    });
+
+    for (const hit of relaxedHits) {
+      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
+      if (!isLikelyWaterway(hit.title, snippet, name)) continue;
+      const result = await tryGetSummary(hit.title, false);
+      if (result && result.type !== 'disambiguation') {
+        renderWikiResult(result, w, bodyEl);
+        return;
+      }
     }
   } catch(e) { /* search API失敗時はStep2へ */ }
 
-  // Step2: 直接タイトル一致（フォールバック）
+  // ── Step2: 直接タイトル一致（フォールバック） ─────────────
   const candidates = buildWikiCandidates(name);
   for (const candidate of candidates) {
-    try {
-      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
-        + encodeURIComponent(candidate);
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.type === 'disambiguation') continue;
-      if (!data.extract || data.extract.length < 40) continue;
-      renderWikiResult(data, w, bodyEl);
+    const result = await tryGetSummary(candidate, false);
+    if (result && result.type !== 'disambiguation') {
+      renderWikiResult(result, w, bodyEl);
       return;
-    } catch(e) { continue; }
+    }
   }
 
   renderNoWikiResult(bodyEl, w);
@@ -1470,7 +1550,7 @@ function brandIcon(brand) {
     <div class="app-title">川めぐりマップ</div>
     <div class="app-subtitle">WATERWAY &amp; ANKYО WALK</div>
   </div>
-  <span class="version-tag">v2.7</span>
+  <span class="version-tag">v2.9</span>
 </header>
 
 <!-- 現在地 -->
@@ -2109,51 +2189,114 @@ function closeDrawer() {
 
 // ── Wikipedia REST API ───────────────────────────────
 async function fetchWikiInfo(name, w, bodyEl) {
-  // Step1: Wikipedia Search API で部分一致検索（曖昧一致に強い）
+  // ── ヘルパー: summary APIを取得して有効な水路記事かを返す ──
+  async function tryGetSummary(title, mustMatchName) {
+    try {
+      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
+        + encodeURIComponent(title);
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.extract || data.extract.length < 40) return null;
+
+      // 曖昧さ回避ページ → 後で展開するのでここではnull
+      if (data.type === 'disambiguation') return { type: 'disambiguation', title };
+
+      // mustMatchName=true のとき: タイトルに検索語のコアが含まれるか確認
+      if (mustMatchName) {
+        const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+        if (!data.title.includes(core)) return null;
+      }
+
+      // 人物・施設記事を除外
+      if (!isLikelyWaterway(data.title, data.extract.slice(0, 120), name)) return null;
+
+      return data;
+    } catch(e) { return null; }
+  }
+
+  // ── Step1: 検索語と一致するタイトルを優先的に探す ──────────
   try {
     const searchUrl = 'https://ja.wikipedia.org/w/api.php?'
-      + 'action=query&list=search&format=json&origin=*&srlimit=5&srsearch='
+      + 'action=query&list=search&format=json&origin=*&srlimit=8&srsearch='
       + encodeURIComponent(name);
     const sRes = await fetch(searchUrl);
     const sData = await sRes.json();
     const hits = (sData.query?.search || []);
 
-    // ヒットした記事タイトルを順に summary APIで取得
-    for (const hit of hits) {
-      // 地名・水路関係でなさそうなものをスキップ（人名・アルバム等）
-      const t = hit.title;
-      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
-      if (!isLikelyWaterway(t, snippet, name)) continue;
+    // パス① タイトルが検索語と完全一致 or 「検索語 (地域名)」形式
+    const exactHits = hits.filter(h => {
+      const t = h.title;
+      return t === name || t.startsWith(name + ' ') || t.startsWith(name + '（') || t.startsWith(name + '(');
+    });
 
-      try {
-        const sumUrl = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
-          + encodeURIComponent(t);
-        const sumRes = await fetch(sumUrl, { headers: { 'Accept': 'application/json' } });
-        if (!sumRes.ok) continue;
-        const sumData = await sumRes.json();
-        if (sumData.type === 'disambiguation') continue;
-        if (!sumData.extract || sumData.extract.length < 40) continue;
+    // パス② 曖昧さ回避ページを先に展開して候補を追加
+    const disambigExpanded = [];
+    for (const hit of exactHits) {
+      const result = await tryGetSummary(hit.title, true);
+      if (!result) continue;
+      if (result.type === 'disambiguation') {
+        // 曖昧さ回避ページの本文からリンク候補を取得
+        try {
+          const linksUrl = 'https://ja.wikipedia.org/w/api.php?'
+            + 'action=query&prop=links&titles=' + encodeURIComponent(hit.title)
+            + '&pllimit=20&format=json&origin=*';
+          const lRes = await fetch(linksUrl);
+          const lData = await lRes.json();
+          const pages = Object.values(lData.query?.pages || {});
+          const links = pages[0]?.links?.map(l => l.title) || [];
+          // 検索語を含むリンクのみ対象
+          const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+          for (const linkTitle of links.filter(t => t.includes(core))) {
+            disambigExpanded.push(linkTitle);
+          }
+        } catch(e) {}
+        continue;
+      }
+      // 曖昧さ回避でない正常な記事が見つかった
+      renderWikiResult(result, w, bodyEl);
+      return;
+    }
 
-        renderWikiResult(sumData, w, bodyEl);
+    // 曖昧さ回避ページから展開された候補を試す（都道府県名付きなど）
+    for (const title of disambigExpanded) {
+      const result = await tryGetSummary(title, true);
+      if (result && result.type !== 'disambiguation') {
+        renderWikiResult(result, w, bodyEl);
         return;
-      } catch(e) { continue; }
+      }
+    }
+
+    // パス③ タイトルが一致しない結果は「タイトルに検索語を含む」ものだけ許可
+    //   （「二ヶ領用水」のように検索語が本文内にあるだけのものを除外）
+    const relaxedHits = hits.filter(h => {
+      const t = h.title;
+      // exactHitsは既に処理済みなのでスキップ
+      if (exactHits.some(e => e.title === t)) return false;
+      const core = name.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+      // タイトルにコアを含まなければ除外
+      return t.includes(core) && core.length >= 2;
+    });
+
+    for (const hit of relaxedHits) {
+      const snippet = hit.snippet ? hit.snippet.replace(/<[^>]+>/g, '') : '';
+      if (!isLikelyWaterway(hit.title, snippet, name)) continue;
+      const result = await tryGetSummary(hit.title, false);
+      if (result && result.type !== 'disambiguation') {
+        renderWikiResult(result, w, bodyEl);
+        return;
+      }
     }
   } catch(e) { /* search API失敗時はStep2へ */ }
 
-  // Step2: 直接タイトル一致（フォールバック）
+  // ── Step2: 直接タイトル一致（フォールバック） ─────────────
   const candidates = buildWikiCandidates(name);
   for (const candidate of candidates) {
-    try {
-      const url = 'https://ja.wikipedia.org/api/rest_v1/page/summary/'
-        + encodeURIComponent(candidate);
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.type === 'disambiguation') continue;
-      if (!data.extract || data.extract.length < 40) continue;
-      renderWikiResult(data, w, bodyEl);
+    const result = await tryGetSummary(candidate, false);
+    if (result && result.type !== 'disambiguation') {
+      renderWikiResult(result, w, bodyEl);
       return;
-    } catch(e) { continue; }
+    }
   }
 
   renderNoWikiResult(bodyEl, w);
@@ -2172,9 +2315,8 @@ function isLikelyWaterway(title, snippet, originalName) {
   if (titleNg.some(w => title.includes(w))) return false;
 
   // ── NG② snippet（記事冒頭）に人物を示す語が含まれる ────
-  // 例: 「広瀬すず（ひろせ すず）は、日本の女優」
   const snippetNg = [
-    'は、日本の', 'は日本の',          // 「○○は、日本の俳優」パターン
+    'は、日本の', 'は日本の',
     '（生まれ）', '(born ', 'born in',
     'スケーター', 'スポーツ選手', 'サッカー選手', '野球選手', '陸上選手',
     '俳優', '女優', '声優', '歌手', '芸人', 'アイドル',
@@ -2183,15 +2325,27 @@ function isLikelyWaterway(title, snippet, originalName) {
   ];
   if (snippetNg.some(w => combined.includes(w))) return false;
 
+  // ── NG③ タイトルに検索語のコアが含まれない場合は厳しく判定 ──
+  // 「二ヶ領用水」のように本文中に検索語が出てくるだけの記事を除外する
+  const core = originalName.replace(/^旧/, '').replace(/緑道$|遊歩道$|公園$|親水$/, '');
+  const titleHasCore = core.length >= 2 && title.includes(core);
+  if (!titleHasCore) {
+    // タイトルに一致しない場合: snippetの「最初の文」がその川の定義文かを確認
+    // OK例: 「五反田川は、神奈川県川崎市を流れる河川」
+    // NG例: 「さらに登戸で山下川を、東生田で五反田川を合わせ」
+    const firstSentence = (snippet || '').split(/[。．]/)[0];
+    const isDefiningArticle = new RegExp(core + '[はがで（(]').test(firstSentence)
+                           && firstSentence.indexOf(core) < 15; // 文頭付近に登場
+    if (!isDefiningArticle) return false;
+  }
+
   // ── OK: 水路・地理系キーワードがあればOK ───────────────
   const okWords = ['川', '河川', '用水', '水路', '堀', '運河', '湖', '池', '沼',
                    '湿地', '流域', '水系', '源流', '暗渠', '疏水', '堰', '港湾',
                    '河口', '支流', '本流', '分流', '灌漑', '一級河川', '二級河川'];
   if (okWords.some(w => combined.includes(w))) return true;
 
-  // 元の川の名前がタイトルに含まれていればOK（地域限定記事など）
-  const core = originalName.replace(/^旧/, '').replace(/緑道$|遊歩道$|親水$/, '');
-  if (title.includes(core) && core.length >= 2) return true;
+  if (titleHasCore) return true;
 
   return false;
 }
