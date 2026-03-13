@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>いま何水系？</title>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@300;400;500&family=Noto+Sans+JP:wght@300;400;500&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@300;400;500;700&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js">
 // ── ドロワー制御 ─────────────────────────────────────
@@ -437,7 +437,7 @@ function renderFacilityMarkers(facilities) {
     const marker = L.marker([f.lat, f.lng], { icon });
     marker._facilityId = f.id;
     marker.bindPopup(`
-      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+      <div style="font-family:'Zen Maru Gothic',sans-serif;font-size:12px;line-height:1.7">
         <b>${f.name}</b><br>
         <span style="color:#7a9aaa;font-size:10px;font-family:monospace">
           ${isToilet ? 'トイレ' : 'コンビニ'} · ${formatDist(f.dist)}
@@ -482,6 +482,19 @@ function brandIcon(brand) {
     --stream: #4a8fa3;
     --river: #2d5a6b;
     --drain: #7a9a7a;
+    /* 新変数（後方互換） */
+    --bg-primary: #fafcfd;
+    --bg-secondary: #f0f8fa;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f0f8fa;
+    --bg-surface: #f0f8fa;
+    --text-primary: #1a2630;
+    --text-secondary: #3d5260;
+    --text-faint: #7a9aaa;
+    --accent: #4a8fa3;
+    --accent-soft: #dff0f4;
+    --border: #e8eef0;
+    --border-soft: #e8eef0;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -489,7 +502,7 @@ function brandIcon(brand) {
   body {
     background: var(--white);
     color: var(--ink);
-    font-family: 'Noto Sans JP', sans-serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-weight: 300;
     min-height: 100vh;
     max-width: 430px;
@@ -510,10 +523,10 @@ function brandIcon(brand) {
   }
 
   .app-title {
-    font-family: 'Noto Serif JP', serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 18px;
     font-weight: 500;
-    color: var(--water-deep);
+    color: var(--water-mid);
     letter-spacing: 0.05em;
   }
 
@@ -529,7 +542,7 @@ function brandIcon(brand) {
     font-family: 'DM Mono', monospace;
     font-size: 9px;
     color: var(--water-mid);
-    background: var(--water-pale);
+    background: var(--white);
     padding: 3px 7px;
     border-radius: 4px;
     letter-spacing: 0.05em;
@@ -538,7 +551,7 @@ function brandIcon(brand) {
   /* 現在地 */
   .location-section {
     padding: 16px 20px;
-    background: var(--water-mist);
+    background: var(--white);
     border-bottom: 1px solid var(--stone);
   }
 
@@ -549,7 +562,7 @@ function brandIcon(brand) {
     color: white;
     border: none;
     border-radius: 10px;
-    font-family: 'Noto Sans JP', sans-serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 14px;
     font-weight: 400;
     letter-spacing: 0.1em;
@@ -573,7 +586,7 @@ function brandIcon(brand) {
   }
 
   .coord-card {
-    background: white;
+    background: var(--white);
     border: 1px solid var(--stone-dark);
     border-radius: 8px;
     padding: 7px 10px;
@@ -590,7 +603,7 @@ function brandIcon(brand) {
   .coord-value {
     font-family: 'DM Mono', monospace;
     font-size: 11px;
-    color: var(--water-deep);
+    color: var(--water-mid);
     margin-top: 2px;
     white-space: nowrap;
     overflow: hidden;
@@ -628,7 +641,7 @@ function brandIcon(brand) {
     height: 240px;
   }
 
-  .leaflet-container { font-family: 'Noto Sans JP', sans-serif; cursor: crosshair !important; }
+  .leaflet-container { font-family: 'Zen Maru Gothic', sans-serif; cursor: crosshair !important; }
   .leaflet-grab { cursor: crosshair !important; }
   .leaflet-dragging .leaflet-grab { cursor: grabbing !important; }
 
@@ -646,15 +659,15 @@ function brandIcon(brand) {
   }
 
   .waterway-card {
-    background: white;
+    background: var(--white);
     border: 1px solid var(--stone);
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 11px 13px;
     margin-bottom: 7px;
     display: flex;
     align-items: flex-start;
     gap: 10px;
-    transition: border-color 0.2s, box-shadow 0.2s;
+    transition: border-color 0.2s, background 0.2s;
     cursor: pointer;
   }
 
@@ -716,7 +729,7 @@ function brandIcon(brand) {
 
   .tag-culvert { background: #ebe8f5; color: #6b5fa0; }
   .tag-underground { background: #ebe8f5; color: #6b5fa0; }
-  .tag-river { background: #ddedf5; color: #2d6880; }
+  .tag-river { background: #ddedf5; color: var(--accent); }
   .tag-canal { background: #ddf5ee; color: #2d6850; }
   .tag-stream { background: #ddf0f5; color: #2d6870; }
   .tag-drain { background: #eef5dd; color: #406030; }
@@ -849,7 +862,7 @@ function brandIcon(brand) {
     font-size: 9px;
     color: var(--ink-faint);
     font-family: 'DM Mono', monospace;
-    background: var(--water-mist);
+    background: var(--white);
     letter-spacing: 0.06em;
     border-top: 1px solid var(--stone);
     text-align: center;
@@ -889,7 +902,7 @@ function brandIcon(brand) {
     transform: translateX(-50%) translateY(100%);
     width: 100%;
     max-width: 430px;
-    max-height: 82vh;
+    max-height: 55vh;
     background: var(--white);
     border-radius: 18px 18px 0 0;
     z-index: 501;
@@ -928,10 +941,10 @@ function brandIcon(brand) {
   }
 
   .drawer-title {
-    font-family: 'Noto Serif JP', serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 20px;
     font-weight: 500;
-    color: var(--water-deep);
+    color: var(--water-mid);
     letter-spacing: 0.04em;
   }
 
@@ -959,7 +972,7 @@ function brandIcon(brand) {
   .drawer-thumb-placeholder {
     width: 100%;
     height: 120px;
-    background: var(--water-pale);
+    background: var(--white);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -972,7 +985,7 @@ function brandIcon(brand) {
   }
 
   .drawer-extract {
-    font-family: 'Noto Serif JP', serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 13.5px;
     line-height: 2.1;
     color: var(--ink-soft);
@@ -1027,15 +1040,15 @@ function brandIcon(brand) {
     display: block;
     margin-top: 16px;
     padding: 11px;
-    background: var(--water-pale);
+    background: var(--white);
     border: 1px solid var(--water-light);
     border-radius: 8px;
     text-align: center;
     font-size: 12px;
-    color: var(--water-deep);
+    color: var(--water-mid);
     text-decoration: none;
     letter-spacing: 0.05em;
-    font-family: 'Noto Sans JP', sans-serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     transition: background 0.15s;
   }
   .drawer-wiki-link:hover { background: var(--water-light); }
@@ -1074,8 +1087,8 @@ function brandIcon(brand) {
     z-index: 150;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    background: var(--white);
-    border-top: 1px solid var(--stone);
+    background: var(--water-mist);
+    border-top: 1px solid var(--border);
     box-shadow: 0 -2px 12px rgba(45,90,107,0.08);
   }
 
@@ -1083,7 +1096,7 @@ function brandIcon(brand) {
     padding: 11px 8px 10px;
     border: none;
     background: none;
-    font-family: 'Noto Sans JP', sans-serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 11px;
     color: var(--ink-faint);
     cursor: pointer;
@@ -1097,9 +1110,9 @@ function brandIcon(brand) {
   }
 
   .bnav-btn.active {
-    color: var(--water-deep);
+    color: var(--water-mid);
     border-top-color: var(--water-mid);
-    background: var(--water-mist);
+    background: var(--white);
   }
 
   .bnav-icon { font-size: 18px; line-height: 1; }
@@ -1114,7 +1127,7 @@ function brandIcon(brand) {
     display: flex;
     gap: 6px;
     padding: 12px 16px 8px;
-    background: var(--water-mist);
+    background: var(--white);
     border-bottom: 1px solid var(--stone);
   }
 
@@ -1122,8 +1135,8 @@ function brandIcon(brand) {
     padding: 5px 12px;
     border-radius: 20px;
     border: 1px solid var(--stone-dark);
-    background: white;
-    font-family: 'Noto Sans JP', sans-serif;
+    background: var(--white);
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 11px;
     color: var(--ink-soft);
     cursor: pointer;
@@ -1146,7 +1159,7 @@ function brandIcon(brand) {
     display: flex;
     align-items: center;
     gap: 11px;
-    background: white;
+    background: var(--white);
     border: 1px solid var(--stone);
     border-radius: 10px;
     padding: 11px 13px;
@@ -1202,8 +1215,8 @@ function brandIcon(brand) {
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 9px;
-    background: var(--water-pale);
-    color: var(--water-deep);
+    background: var(--white);
+    color: var(--water-mid);
   }
 
   .fac-tag-24h  { background: #e8f8e8; color: #2a6b2a; }
@@ -1230,7 +1243,7 @@ function brandIcon(brand) {
   /* ── 最寄り水路ハイライト ────────────────────────── */
   .nearest-section {
     border-bottom: 1px solid var(--stone);
-    background: var(--water-mist);
+    background: var(--white);
   }
 
   .nearest-inner {
@@ -1247,7 +1260,7 @@ function brandIcon(brand) {
   }
 
   .nearest-card {
-    background: white;
+    background: var(--white);
     border: 1px solid var(--water-light);
     border-radius: 12px;
     padding: 14px 16px;
@@ -1279,10 +1292,10 @@ function brandIcon(brand) {
   }
 
   .nearest-name {
-    font-family: 'Noto Serif JP', serif;
+    font-family: 'Zen Maru Gothic', sans-serif;
     font-size: 22px;
     font-weight: 500;
-    color: var(--water-deep);
+    color: var(--water-mid);
     letter-spacing: 0.04em;
     line-height: 1.3;
   }
@@ -1311,23 +1324,143 @@ function brandIcon(brand) {
     gap: 5px;
     margin-top: 8px;
     padding: 4px 10px;
-    background: var(--water-pale);
+    background: var(--white);
     border: 1px solid var(--water-light);
     border-radius: 20px;
     font-size: 10px;
-    color: var(--water-deep);
+    color: var(--water-mid);
     font-family: 'DM Mono', monospace;
     letter-spacing: 0.06em;
   }
   .watershed-badge-small::before {
     content: '水系';
     font-size: 8px;
-    background: var(--water-mid);
+    background: var(--water-deep);
     color: white;
     padding: 1px 5px;
     border-radius: 3px;
     letter-spacing: 0.05em;
   }
+
+  /* ── 暗渠スポットセクション ──────────────────────── */
+  .ankyo-section {
+    margin: 0 0 2px;
+    background: linear-gradient(135deg, #2a1f4e 0%, #3d2d6b 100%);
+    border-radius: 0;
+  }
+  .ankyo-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px 6px;
+  }
+  .ankyo-eyebrow {
+    font-size: 9px;
+    letter-spacing: 0.15em;
+    color: #a89fd4;
+    font-family: 'DM Mono', monospace;
+    text-transform: uppercase;
+  }
+  .ankyo-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--ink);
+    font-family: 'Zen Maru Gothic', sans-serif;
+  }
+  .ankyo-count {
+    margin-left: auto;
+    font-size: 10px;
+    color: #a89fd4;
+    font-family: 'DM Mono', monospace;
+  }
+  .ankyo-list {
+    padding: 0 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ankyo-card {
+    background: var(--water-pale);
+    border: 1px solid rgba(168,159,212,0.25);
+    border-radius: 10px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .ankyo-card:active { background: var(--water-pale); }
+  .ankyo-card-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ankyo-icon {
+    font-size: 18px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+  .ankyo-card-name {
+    font-size: 13px;
+    color: #e8e4ff;
+    font-family: 'Zen Maru Gothic', sans-serif;
+    font-weight: 600;
+    flex: 1;
+  }
+  .ankyo-card-dist {
+    font-size: 11px;
+    color: #a89fd4;
+    font-family: 'DM Mono', monospace;
+    white-space: nowrap;
+  }
+  .ankyo-card-sub {
+    font-size: 10px;
+    color: #a89fd4;
+    margin-top: 3px;
+    padding-left: 26px;
+    letter-spacing: 0.04em;
+  }
+  .ankyo-hint {
+    font-size: 9px;
+    color: #7b6fbb;
+    text-align: center;
+    padding: 4px 0 2px;
+    letter-spacing: 0.08em;
+  }
+
+  /* ── 豆知識バッジ ────────────────────────────────── */
+  .trivia-badge {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: var(--white);
+    border-left: 3px solid var(--water-mid);
+    border-radius: 0 6px 6px 0;
+    font-size: 11px;
+    color: var(--ink);
+    line-height: 1.6;
+  }
+  .trivia-badge::before {
+    content: '💧';
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  /* ── 無名stream非表示・件数表示 ─────────────────── */
+  .unnamed-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    color: var(--ink-faint);
+    font-size: 11px;
+    font-family: 'DM Mono', monospace;
+    border-top: 1px dashed var(--stone);
+    margin-top: 4px;
+    letter-spacing: 0.05em;
+  }
+  .unnamed-summary::before { content: '∿'; font-size: 14px; }
+
 </style>
 </head>
 <body>
@@ -1337,7 +1470,7 @@ function brandIcon(brand) {
     <div class="app-title">川めぐりマップ</div>
     <div class="app-subtitle">WATERWAY &amp; ANKYО WALK</div>
   </div>
-  <span class="version-tag">v2.6</span>
+  <span class="version-tag">v2.7</span>
 </header>
 
 <!-- 現在地 -->
@@ -1379,6 +1512,9 @@ function brandIcon(brand) {
   <div class="map-caption" id="mapCaption">地図をタップして判定地点を移動できます</div>
 </section>
 
+<!-- 暗渠スポットセクション -->
+
+
 <!-- 水路リスト -->
 <section class="waterways-section">
   <div class="eyebrow">
@@ -1396,8 +1532,8 @@ function brandIcon(brand) {
 <section class="legend">
   <div class="legend-title">水路の種別 / WATERWAY TYPES</div>
   <div class="legend-grid">
-    <div class="legend-item"><span class="legend-dot" style="background:#2d6880"></span>river — 河川</div>
-    <div class="legend-item"><span class="legend-dot" style="background:#4a8fa3"></span>stream — 小川</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>river — 河川</div>
+    <div class="legend-item"><span class="legend-dot" style="background:var(--stream)"></span>stream — 小川</div>
     <div class="legend-item"><span class="legend-dot" style="background:#2d8060"></span>canal — 用水路</div>
     <div class="legend-item"><span class="legend-dot" style="background:#406030"></span>drain — 排水路</div>
     <div class="legend-item"><span class="legend-dot" style="background:#6b5fa0"></span>culvert — 暗渠</div>
@@ -1688,19 +1824,21 @@ function processOverpassData(data, centerLat, centerLng) {
 
   fetchedWaterways = deduped;
   renderWaterwayLines(deduped);
-  renderWaterwayList(deduped.slice(0, 5));
+  renderWaterwayList(deduped);   // 名前付き全件を渡す（内部でフィルタ）
   renderNearestWaterway(deduped);
 }
 
 // ── 水系推定（軽量版）────────────────────────────────
 // 取得済みのriver wayから水系名を推定する
 function guessWatershed(ways) {
-  // 最初に見つかったriver/canalの名前から水系を推定
+  // ① river_system タグがあればそれを優先
+  const withTag = ways.find(w => w.tags?.river_system);
+  if (withTag) return withTag.tags.river_system;
+
+  // ② 名前付きriverから推定
   const mainRiver = ways.find(w => w.waterwayType === 'river' && w.name);
   if (!mainRiver) return null;
-
   const name = mainRiver.name;
-  // 「○○川」→「○○川水系」
   if (name.endsWith('川') || name.endsWith('河')) return name + '水系';
   if (name.endsWith('用水') || name.endsWith('用水路')) return name;
   return name + '流域';
@@ -1750,12 +1888,12 @@ function renderNearestWaterway(ways) {
 function waterwayColor(type, isCulvert) {
   if (isCulvert) return '#7b6fbb';
   switch (type) {
-    case 'river': return '#2d6880';
-    case 'stream': return '#4a8fa3';
+    case 'river': return 'var(--accent)';
+    case 'stream': return '#7bc4ea';
     case 'canal': return '#2d8060';
     case 'drain': return '#608040';
     case 'ditch': return '#907050';
-    default: return '#4a8fa3';
+    default: return '#7bc4ea';
   }
 }
 
@@ -1801,10 +1939,10 @@ function renderWaterwayLines(ways) {
     const label = w.name || waterwayLabel(w.waterwayType, w.isCulvert);
     const distStr = formatDist(w.dist);
     line.bindPopup(`
-      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+      <div style="font-family:'Zen Maru Gothic',sans-serif;font-size:12px;line-height:1.7">
         <b>${label}</b><br>
         <span style="color:#7a9aaa;font-size:10px;font-family:monospace">${waterwayLabel(w.waterwayType, w.isCulvert)}${w.isCulvert ? ' · 暗渠' : ''} · ${distStr}</span>
-        ${w.altName ? `<br><span style="color:#aaa;font-size:10px">別名: ${w.altName}</span>` : ''}
+        ${w.altName ? `<br><span style="color:#7a9aaa;font-size:10px">別名: ${w.altName}</span>` : ''}
       </div>
     `);
 
@@ -1813,21 +1951,55 @@ function renderWaterwayLines(ways) {
 }
 
 // ─── 水路リスト描画 ───────────────────────────────────
+// ── 主要河川の豆知識 ─────────────────────────────────
+const RIVER_TRIVIA = {
+  '多摩川': '東京都と神奈川県の境を流れる全長138kmの一級河川。かつては「境川」とも呼ばれ、江戸時代には江戸と武蔵国の境界を成した。サクラマスやアユの遡上でも知られる。',
+  '府中用水': '多摩川から取水する農業用水路で、江戸時代初期に整備された。現在も府中市・国分寺市・小金井市の農地を潤す。多摩川水系最大級の用水路。',
+  '二ヶ領用水': '慶長16年（1611年）に完成した神奈川県川崎市の農業用水路。二ヶ領（稲毛領・川崎領）にまたがることから命名。全長約32km、関東最古の人工用水路のひとつ。',
+  '野川': '国分寺市の「お鷹の道・真姿の池湧水群」を源流とし、世田谷区で多摩川に合流する全長20kmの川。かつては暗渠化が進んだが、現在は自然護岸が復元されている区間も多い。',
+  '仙川': '調布市・世田谷区・三鷹市を流れ野川に合流する。上流部は戦後に整備された人工的な直線河道で、暗渠区間も多く残る。',
+  '残堀川': '武蔵村山市から立川市・昭島市を流れ多摩川へ合流。かつては多摩川の乱流を集めた自然河川だったが、現在は大半が直線化されている。',
+  '大栗川': '八王子市・多摩市を流れ、多摩川に合流する延長約12kmの支流。多摩ニュータウン整備時に大規模な改修が行われた。',
+  '乞田川': '多摩市を流れ大栗川に合流する小河川。多摩ニュータウンの開発に伴い、一部が暗渠化・整備された。',
+  '浅川': '高尾山を源流とし、八王子市・日野市を流れて多摩川に合流する全長43kmの支流。かつてはアユ漁が盛んで、多摩川水系最大の支流。',
+  '秋川': '檜原村の山間部を源とし、あきる野市で多摩川に合流。清流として知られ、渓流釣りや川遊びのスポットが多い。',
+};
+
+function waterwayTrivia(name) {
+  if (!name) return null;
+  // 前方一致で検索（「二ヶ領本川」→「二ヶ領用水」にも対応）
+  for (const [key, text] of Object.entries(RIVER_TRIVIA)) {
+    if (name.includes(key) || key.includes(name.replace(/本川|新川|分水/, ''))) {
+      return text;
+    }
+  }
+  return null;
+}
+
 function renderWaterwayList(ways) {
   const listEl = document.getElementById('waterwaysList');
-  document.getElementById('waterwayCount').textContent = `${fetchedWaterways.length}件`;
 
-  if (ways.length === 0) {
+  // 名前付き水路のみ表示（暗渠・無名streamは除外）
+  const named   = fetchedWaterways.filter(w => w.name && !w.isCulvert);
+  const unnamed = fetchedWaterways.filter(w => !w.name && !w.isCulvert);
+  const total   = fetchedWaterways.length;
+
+  document.getElementById('waterwayCount').textContent = `${total}件`;
+
+  if (named.length === 0 && unnamed.length === 0) {
     listEl.innerHTML = `<div style="text-align:center;padding:20px 0;color:var(--stone-dark);font-size:12px">この周辺には登録された水路が見つかりませんでした</div>`;
     return;
   }
 
   listEl.innerHTML = '';
-  ways.forEach((w, i) => {
-    const name = w.name || `無名の${waterwayLabel(w.waterwayType, w.isCulvert)}`;
+  const showWays = ways === fetchedWaterways ? named : named; // 常に名前付き表示
+
+  showWays.forEach((w, i) => {
     const typeClass = `wtype-${w.isCulvert ? 'culvert' : w.waterwayType}`;
-    const tagClass = `tag-${w.isCulvert ? 'culvert' : (w.waterwayType || 'default')}`;
-    const tagText = waterwayLabel(w.waterwayType, w.isCulvert) + (w.isCulvert ? ' · 暗渠' : '');
+    const tagClass  = `tag-${w.isCulvert ? 'culvert' : (w.waterwayType || 'default')}`;
+    const tagText   = waterwayLabel(w.waterwayType, w.isCulvert);
+    const trivia    = waterwayTrivia(w.name);
+    const rsys      = w.tags?.river_system || null;
 
     const card = document.createElement('div');
     card.className = 'waterway-card fade-in';
@@ -1836,38 +2008,30 @@ function renderWaterwayList(ways) {
     card.innerHTML = `
       <div class="wtype-icon ${typeClass}">${waterwayIcon(w.waterwayType, w.isCulvert)}</div>
       <div class="winfo">
-        <div class="wname">${name}</div>
+        <div class="wname">${w.name}</div>
         <div class="wmeta">
           <span class="wmeta-tag ${tagClass}">${tagText}</span>
+          ${rsys ? `<span style="color:var(--water-deep);font-size:10px">${rsys}</span>` : ''}
           ${w.altName ? `<span style="color:var(--ink-faint)">別名: ${w.altName}</span>` : ''}
-          ${w.tags.ref ? `<span style="color:var(--ink-faint)">${w.tags.ref}</span>` : ''}
         </div>
+        ${trivia ? `<div class="trivia-badge">${trivia}</div>` : ''}
       </div>
       <div class="wdist">${formatDist(w.dist)}</div>
     `;
-
-    // クリック: ドロワーを開きWikipedia情報を表示
-    card.onclick = () => {
-      openDrawer(w, i);
-    };
-
+    card.onclick = () => openDrawer(w, fetchedWaterways.indexOf(w));
     listEl.appendChild(card);
   });
 
-  // 5件以上あれば「もっと見る」
-  if (fetchedWaterways.length > 5) {
-    const more = document.createElement('button');
-    more.style.cssText = `
-      width:100%;margin-top:8px;padding:9px;border:1px dashed var(--stone-dark);
-      background:none;border-radius:8px;font-size:11px;color:var(--ink-faint);
-      font-family:'Noto Sans JP',sans-serif;cursor:pointer;letter-spacing:0.05em;
-    `;
-    more.textContent = `さらに ${fetchedWaterways.length - 5} 件を表示`;
-    more.onclick = () => {
-      renderWaterwayList(fetchedWaterways);
-    };
-    listEl.appendChild(more);
+  // 無名支流の件数サマリー
+  if (unnamed.length > 0) {
+    const rsysSet = [...new Set(unnamed.map(w => w.tags?.river_system).filter(Boolean))];
+    const rsysText = rsysSet.length > 0 ? rsysSet.join('・') + 'の' : '';
+    const summary = document.createElement('div');
+    summary.className = 'unnamed-summary';
+    summary.textContent = `他に${rsysText}無名支流が ${unnamed.length} 本流れています`;
+    listEl.appendChild(summary);
   }
+
 }
 
 // ─── ユーティリティ ───────────────────────────────────
@@ -2316,7 +2480,7 @@ function renderFacilityMarkers(facilities) {
     const marker = L.marker([f.lat, f.lng], { icon });
     marker._facilityId = f.id;
     marker.bindPopup(`
-      <div style="font-family:'Noto Sans JP',sans-serif;font-size:12px;line-height:1.7">
+      <div style="font-family:'Zen Maru Gothic',sans-serif;font-size:12px;line-height:1.7">
         <b>${f.name}</b><br>
         <span style="color:#7a9aaa;font-size:10px;font-family:monospace">
           ${isToilet ? 'トイレ' : 'コンビニ'} · ${formatDist(f.dist)}
