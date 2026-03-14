@@ -1542,9 +1542,179 @@ function brandIcon(brand) {
   }
   .unnamed-summary::before { content: '∿'; font-size: 14px; }
 
+  /* ── 起動モーダル（現在地 or 地図から選ぶ） ─────── */
+  .start-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 40, 70, 0.72);
+    z-index: 900;
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .start-modal {
+    width: 100%;
+    max-width: 430px;
+    background: var(--white);
+    border-radius: 20px 20px 0 0;
+    padding: 10px 24px 36px;
+    box-shadow: 0 -8px 40px rgba(0,40,70,0.25);
+    animation: slideUpModal 0.38s cubic-bezier(0.32,0.72,0,1) both;
+  }
+
+  @keyframes slideUpModal {
+    from { transform: translateY(100%); }
+    to   { transform: translateY(0); }
+  }
+
+  .start-modal-handle {
+    width: 36px;
+    height: 4px;
+    background: var(--stone-dark);
+    border-radius: 2px;
+    margin: 0 auto 20px;
+  }
+
+  .start-modal-icon {
+    text-align: center;
+    font-size: 32px;
+    margin-bottom: 10px;
+    line-height: 1;
+  }
+
+  .start-modal-title {
+    font-family: 'Zen Maru Gothic', sans-serif;
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--water-mid);
+    text-align: center;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+
+  .start-modal-sub {
+    font-size: 11px;
+    color: var(--ink-faint);
+    text-align: center;
+    letter-spacing: 0.05em;
+    margin-bottom: 22px;
+    line-height: 1.7;
+  }
+
+  .start-modal-btn {
+    width: 100%;
+    padding: 15px 20px;
+    border-radius: 12px;
+    border: none;
+    font-family: 'Zen Maru Gothic', sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: background 0.15s, transform 0.1s;
+    margin-bottom: 10px;
+    text-align: left;
+  }
+
+  .start-modal-btn:active { transform: scale(0.98); }
+
+  .start-modal-btn-primary {
+    background: var(--water-deep);
+    color: white;
+  }
+  .start-modal-btn-primary:hover { background: var(--water-mid); }
+
+  .start-modal-btn-secondary {
+    background: var(--water-mist);
+    color: var(--ink);
+    border: 1px solid var(--stone-dark);
+  }
+  .start-modal-btn-secondary:hover { background: var(--water-pale); }
+
+  .start-modal-btn-icon {
+    font-size: 22px;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  .start-modal-btn-text { flex: 1; }
+  .start-modal-btn-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .start-modal-btn-desc {
+    display: block;
+    font-size: 10px;
+    opacity: 0.65;
+    margin-top: 2px;
+    letter-spacing: 0.04em;
+  }
+
+  .start-modal-privacy {
+    margin-top: 14px;
+    font-size: 9px;
+    color: var(--ink-faint);
+    text-align: center;
+    letter-spacing: 0.06em;
+    line-height: 1.7;
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* 地図選択モードのヒント */
+  .map-pick-banner {
+    background: var(--water-deep);
+    color: white;
+    text-align: center;
+    padding: 10px 16px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    font-family: 'Zen Maru Gothic', sans-serif;
+    display: none;
+  }
+  .map-pick-banner.active { display: block; }
+
 </style>
 </head>
 <body>
+
+<!-- ── 起動モーダル ────────────────────────────────── -->
+<div class="start-modal-overlay" id="startModalOverlay">
+  <div class="start-modal">
+    <div class="start-modal-handle"></div>
+    <div class="start-modal-icon">〜</div>
+    <div class="start-modal-title">川めぐりマップへようこそ</div>
+    <div class="start-modal-sub">
+      位置情報の取得方法を選んでください
+    </div>
+
+    <button class="start-modal-btn start-modal-btn-primary" onclick="startModalGps()">
+      <span class="start-modal-btn-icon">◉</span>
+      <span class="start-modal-btn-text">
+        <span class="start-modal-btn-label">現在地を使う</span>
+        <span class="start-modal-btn-desc">GPSで今いる場所の近くを検索</span>
+      </span>
+    </button>
+
+    <button class="start-modal-btn start-modal-btn-secondary" onclick="startModalMapPick()">
+      <span class="start-modal-btn-icon">🗾</span>
+      <span class="start-modal-btn-text">
+        <span class="start-modal-btn-label">地図から場所を選ぶ</span>
+        <span class="start-modal-btn-desc">現在地を使わずに地図をタップして指定</span>
+      </span>
+    </button>
+
+    <div class="start-modal-privacy">
+      🔒 「地図から選ぶ」は位置情報を送信しません<br>
+      いつでも「現在地を取得する」ボタンで切り替えられます
+    </div>
+  </div>
+</div>
 
 <header class="header">
   <div>
@@ -1585,6 +1755,9 @@ function brandIcon(brand) {
 
 <!-- 地図 -->
 <section class="map-section">
+  <div class="map-pick-banner" id="mapPickBanner">
+    🗾 地図をタップして調べたい場所を指定してください
+  </div>
   <div class="map-header">
     <div class="eyebrow" style="margin-bottom:0">MAP</div>
     <div class="osm-badge"><span class="osm-dot"></span>OpenStreetMap</div>
@@ -1701,6 +1874,7 @@ function initMap(lat, lng) {
   // 地図クリック/タップで任意地点に移動
   map.on('click', function(e) {
     moveToLocation(e.latlng.lat, e.latlng.lng);
+    document.getElementById('mapPickBanner').classList.remove('active');
   });
 }
 
@@ -1731,6 +1905,47 @@ function updateUserMarker(lat, lng) {
   userMarker = L.marker([lat, lng], { icon, zIndexOffset: 1000 }).addTo(map);
   userMarker.bindPopup('<b style="font-family:sans-serif;font-size:12px;">📍 現在地</b>').openPopup();
 }
+// ─── 起動モーダル制御 ────────────────────────────────
+function closeStartModal() {
+  const overlay = document.getElementById('startModalOverlay');
+  overlay.style.opacity = '0';
+  overlay.style.transition = 'opacity 0.25s ease';
+  setTimeout(() => overlay.style.display = 'none', 260);
+}
+
+// 「現在地を使う」ボタン
+function startModalGps() {
+  closeStartModal();
+  startLocating();
+}
+
+// 「地図から選ぶ」ボタン
+function startModalMapPick() {
+  closeStartModal();
+
+  // 日本全体が見えるズームで地図を初期化（東京付近をデフォルト中心）
+  const defaultLat = 35.68, defaultLng = 139.69;
+  if (!map) {
+    map = L.map('map', { zoomControl: true, attributionControl: false })
+            .setView([defaultLat, defaultLng], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19, opacity: 0.88
+    }).addTo(map);
+
+    // クリックで地点選択（moveToLocationと同じ）
+    map.on('click', function(e) {
+      moveToLocation(e.latlng.lat, e.latlng.lng);
+      // バナーを非表示に
+      document.getElementById('mapPickBanner').classList.remove('active');
+    });
+  }
+
+  // バナーを表示（「地図をタップしてください」）
+  document.getElementById('mapPickBanner').classList.add('active');
+  document.getElementById('mapCaption').textContent = '🗾 地図をタップして調べたい場所を指定してください';
+  setStatus('', '地図で選択中');
+}
+
 // ─── 現在地取得 ──────────────────────────────────────
 function startLocating() {
   setStatus('loading', '取得中…');
@@ -1793,10 +2008,13 @@ function onGotLocation(lat, lng, isDemo = false) {
   setStatus('active', isDemo ? 'デモ' : '取得済み');
   document.getElementById('locationBtn').disabled = false;
   document.getElementById('btnText').textContent = '現在地を再取得';
+  document.getElementById('mapPickBanner').classList.remove('active');
 
   // 地図が未初期化なら初期化してから移動
   if (!map) {
     initMap(lat, lng);
+  } else {
+    map.setView([lat, lng], 15);
   }
   moveToLocation(lat, lng, false);
 }

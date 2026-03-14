@@ -1,0 +1,35 @@
+{
+  "name": "川めぐりマップ",
+  "short_name": "川めぐり",
+  "description": "今いる場所の近くにある川・水路・暗渠を地図で見つけよう",
+  "start_url": "/kawameguri/",
+  "scope": "/kawameguri/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fafcfd",
+  "theme_color": "#00589f",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "ogp.png",
+      "sizes": "1200x630",
+      "type": "image/png",
+      "form_factor": "wide"
+    }
+  ],
+  "categories": ["navigation", "travel", "utilities"]
+}
